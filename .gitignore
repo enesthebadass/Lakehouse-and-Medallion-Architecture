@@ -1,0 +1,39 @@
+# Local instructions and generated presentation notes
+talimatlar.md
+DEMO_REHBERI.md
+
+# Local environment files
+.env
+env.txt
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Airflow local/runtime artifacts
+airflow.db
+airflow.cfg
+logs/
+
+# Spark/runtime artifacts
+.ivy2/
+metastore_db/
+derby.log
+spark-warehouse/
+
+# Local data exports and temporary files
+exports/
+data/
+tmp/
+*.tmp
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
