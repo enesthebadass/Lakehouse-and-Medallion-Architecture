@@ -54,7 +54,7 @@ with DAG(
     )
 
     process_silver = SparkSubmitOperator(
-        task_id="process_silver_clean_delta",
+        task_id="process_silver_data_vault",
         application="/opt/airflow/scripts/2_process_silver.py",
         conn_id="spark_default",
         packages=SPARK_PACKAGES,

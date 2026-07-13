@@ -1,4 +1,4 @@
-"""Clean bronze JSON data and write Delta tables to the silver layer."""
+"""Clean bronze data and build a Data Vault 2.0 Raw Vault in Silver."""
 
 from __future__ import annotations
 
@@ -17,11 +17,12 @@ SPARK_MASTER_URL = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 
 BRONZE_BASE_PATH = f"s3a://{S3_BUCKET}/bronze"
 SILVER_BASE_PATH = f"s3a://{S3_BUCKET}/silver"
+RAW_VAULT_BASE_PATH = f"{SILVER_BASE_PATH}/raw_vault"
 
 
 def create_spark_session() -> SparkSession:
     return (
-        SparkSession.builder.appName("lakehouse-medallion-process-silver")
+        SparkSession.builder.appName("lakehouse-medallion-process-silver-data-vault")
         .master(SPARK_MASTER_URL)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
@@ -38,6 +39,14 @@ def create_spark_session() -> SparkSession:
     )
 
 
+def delete_path(spark: SparkSession, path: str) -> None:
+    hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+    fs_path = spark._jvm.org.apache.hadoop.fs.Path(path)
+    fs = fs_path.getFileSystem(hadoop_conf)
+    if fs.exists(fs_path):
+        fs.delete(fs_path, True)
+
+
 def read_bronze_table(spark: SparkSession, table_name: str) -> DataFrame:
     return spark.read.option("multiLine", "false").json(f"{BRONZE_BASE_PATH}/{table_name}/*.jsonl")
 
@@ -47,7 +56,7 @@ def write_delta(df: DataFrame, table_name: str) -> None:
         df.write.format("delta")
         .mode("overwrite")
         .option("overwriteSchema", "true")
-        .save(f"{SILVER_BASE_PATH}/{table_name}")
+        .save(f"{RAW_VAULT_BASE_PATH}/{table_name}")
     )
 
 
@@ -69,6 +78,15 @@ def cast_int(column_name: str) -> F.Column:
 
 def require_columns(df: DataFrame, columns: Iterable[str]) -> DataFrame:
     return df.dropna(subset=list(columns))
+
+
+def hash_columns(*columns: str) -> F.Column:
+    normalized = [F.coalesce(F.col(column).cast("string"), F.lit("^^")) for column in columns]
+    return F.sha2(F.concat_ws("||", *normalized), 256)
+
+
+def add_audit_columns(df: DataFrame, record_source: str) -> DataFrame:
+    return df.withColumn("load_datetime", F.current_timestamp()).withColumn("record_source", F.lit(record_source))
 
 
 def clean_customers(df: DataFrame) -> DataFrame:
@@ -166,12 +184,148 @@ def clean_transactions(
     )
 
 
-def log_counts(table_name: str, bronze_df: DataFrame, silver_df: DataFrame) -> None:
+def build_hub_customer(customers: DataFrame) -> DataFrame:
+    return add_audit_columns(
+        customers.select(hash_columns("customer_id").alias("customer_hk"), "customer_id"),
+        "bronze.customers",
+    )
+
+
+def build_hub_account(accounts: DataFrame) -> DataFrame:
+    return add_audit_columns(
+        accounts.select(hash_columns("account_id").alias("account_hk"), "account_id"),
+        "bronze.accounts",
+    )
+
+
+def build_hub_merchant(merchants: DataFrame) -> DataFrame:
+    return add_audit_columns(
+        merchants.select(hash_columns("merchant_id").alias("merchant_hk"), "merchant_id"),
+        "bronze.merchants",
+    )
+
+
+def build_hub_transaction(transactions: DataFrame) -> DataFrame:
+    return add_audit_columns(
+        transactions.select(hash_columns("transaction_id").alias("transaction_hk"), "transaction_id"),
+        "bronze.transactions",
+    )
+
+
+def build_link_customer_account(accounts: DataFrame) -> DataFrame:
+    link = accounts.select(
+        hash_columns("customer_id", "account_id").alias("customer_account_hk"),
+        hash_columns("customer_id").alias("customer_hk"),
+        hash_columns("account_id").alias("account_hk"),
+    ).dropDuplicates(["customer_account_hk"])
+    return add_audit_columns(link, "bronze.accounts")
+
+
+def build_link_transaction_context(transactions: DataFrame) -> DataFrame:
+    link = transactions.select(
+        hash_columns("transaction_id", "customer_id", "account_id", "merchant_id").alias("transaction_context_hk"),
+        hash_columns("transaction_id").alias("transaction_hk"),
+        hash_columns("customer_id").alias("customer_hk"),
+        hash_columns("account_id").alias("account_hk"),
+        hash_columns("merchant_id").alias("merchant_hk"),
+    ).dropDuplicates(["transaction_context_hk"])
+    return add_audit_columns(link, "bronze.transactions")
+
+
+def build_sat_customer_profile(customers: DataFrame) -> DataFrame:
+    sat = customers.select(
+        hash_columns("customer_id").alias("customer_hk"),
+        "first_name",
+        "last_name",
+        "email",
+        "phone_number",
+        "date_of_birth",
+        "city",
+        "country",
+        "customer_segment",
+        "created_at",
+        hash_columns(
+            "first_name",
+            "last_name",
+            "email",
+            "phone_number",
+            "date_of_birth",
+            "city",
+            "country",
+            "customer_segment",
+            "created_at",
+        ).alias("hashdiff"),
+    )
+    return add_audit_columns(sat, "bronze.customers")
+
+
+def build_sat_account_details(accounts: DataFrame) -> DataFrame:
+    sat = accounts.select(
+        hash_columns("account_id").alias("account_hk"),
+        "account_type",
+        "account_status",
+        "card_network",
+        "masked_card_number",
+        "credit_limit",
+        "opened_at",
+        hash_columns(
+            "account_type",
+            "account_status",
+            "card_network",
+            "masked_card_number",
+            "credit_limit",
+            "opened_at",
+        ).alias("hashdiff"),
+    )
+    return add_audit_columns(sat, "bronze.accounts")
+
+
+def build_sat_merchant_details(merchants: DataFrame) -> DataFrame:
+    sat = merchants.select(
+        hash_columns("merchant_id").alias("merchant_hk"),
+        "merchant_name",
+        "merchant_category",
+        "city",
+        "country",
+        "onboarded_at",
+        "risk_score",
+        hash_columns(
+            "merchant_name",
+            "merchant_category",
+            "city",
+            "country",
+            "onboarded_at",
+            "risk_score",
+        ).alias("hashdiff"),
+    )
+    return add_audit_columns(sat, "bronze.merchants")
+
+
+def build_sat_transaction_details(transactions: DataFrame) -> DataFrame:
+    sat = transactions.select(
+        hash_columns("transaction_id").alias("transaction_hk"),
+        "amount",
+        "currency",
+        "transaction_status",
+        "transaction_channel",
+        "transaction_timestamp",
+        hash_columns(
+            "amount",
+            "currency",
+            "transaction_status",
+            "transaction_channel",
+            "transaction_timestamp",
+        ).alias("hashdiff"),
+    )
+    return add_audit_columns(sat, "bronze.transactions")
+
+
+def log_counts(table_name: str, bronze_df: DataFrame, clean_df: DataFrame) -> None:
     bronze_count = bronze_df.count()
-    silver_count = silver_df.count()
-    rejected_count = bronze_count - silver_count
+    clean_count = clean_df.count()
+    rejected_count = bronze_count - clean_count
     print(
-        f"{table_name}: bronze={bronze_count:,}, silver={silver_count:,}, "
+        f"{table_name}: bronze={bronze_count:,}, clean_for_vault={clean_count:,}, "
         f"rejected={rejected_count:,}"
     )
 
@@ -180,35 +334,48 @@ def main() -> None:
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
+    delete_path(spark, SILVER_BASE_PATH)
+
     bronze_customers = read_bronze_table(spark, "customers")
     bronze_accounts = read_bronze_table(spark, "accounts")
     bronze_merchants = read_bronze_table(spark, "merchants")
     bronze_transactions = read_bronze_table(spark, "transactions")
 
-    silver_customers = clean_customers(bronze_customers)
-    silver_accounts = clean_accounts(bronze_accounts, silver_customers)
-    silver_merchants = clean_merchants(bronze_merchants)
-    silver_transactions = clean_transactions(
+    clean_customers_df = clean_customers(bronze_customers)
+    clean_accounts_df = clean_accounts(bronze_accounts, clean_customers_df)
+    clean_merchants_df = clean_merchants(bronze_merchants)
+    clean_transactions_df = clean_transactions(
         bronze_transactions,
-        silver_customers,
-        silver_accounts,
-        silver_merchants,
+        clean_customers_df,
+        clean_accounts_df,
+        clean_merchants_df,
     )
 
-    outputs = {
-        "customers": (bronze_customers, silver_customers),
-        "accounts": (bronze_accounts, silver_accounts),
-        "merchants": (bronze_merchants, silver_merchants),
-        "transactions": (bronze_transactions, silver_transactions),
+    log_counts("customers", bronze_customers, clean_customers_df)
+    log_counts("accounts", bronze_accounts, clean_accounts_df)
+    log_counts("merchants", bronze_merchants, clean_merchants_df)
+    log_counts("transactions", bronze_transactions, clean_transactions_df)
+
+    vault_tables = {
+        "hub_customer": build_hub_customer(clean_customers_df),
+        "hub_account": build_hub_account(clean_accounts_df),
+        "hub_merchant": build_hub_merchant(clean_merchants_df),
+        "hub_transaction": build_hub_transaction(clean_transactions_df),
+        "link_customer_account": build_link_customer_account(clean_accounts_df),
+        "link_transaction_context": build_link_transaction_context(clean_transactions_df),
+        "sat_customer_profile": build_sat_customer_profile(clean_customers_df),
+        "sat_account_details": build_sat_account_details(clean_accounts_df),
+        "sat_merchant_details": build_sat_merchant_details(clean_merchants_df),
+        "sat_transaction_details": build_sat_transaction_details(clean_transactions_df),
     }
 
-    for table_name, (bronze_df, silver_df) in outputs.items():
-        log_counts(table_name, bronze_df, silver_df)
-        write_delta(silver_df, table_name)
-        print(f"Wrote Delta table to {SILVER_BASE_PATH}/{table_name}")
+    for table_name, df in vault_tables.items():
+        row_count = df.count()
+        write_delta(df, table_name)
+        print(f"Wrote {row_count:,} rows to {RAW_VAULT_BASE_PATH}/{table_name}")
 
     spark.stop()
-    print("Silver processing completed.")
+    print("Silver Data Vault processing completed.")
 
 
 if __name__ == "__main__":

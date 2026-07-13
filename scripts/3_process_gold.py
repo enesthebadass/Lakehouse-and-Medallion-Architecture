@@ -1,10 +1,10 @@
-"""Build Kimball-style gold Delta tables from cleaned silver Delta tables."""
+"""Build Kimball-style gold Delta tables from the Silver Data Vault."""
 
 from __future__ import annotations
 
 import os
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
 
@@ -14,13 +14,13 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 SPARK_MASTER_URL = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 
-SILVER_BASE_PATH = f"s3a://{S3_BUCKET}/silver"
+RAW_VAULT_BASE_PATH = f"s3a://{S3_BUCKET}/silver/raw_vault"
 GOLD_BASE_PATH = f"s3a://{S3_BUCKET}/gold"
 
 
 def create_spark_session() -> SparkSession:
     return (
-        SparkSession.builder.appName("lakehouse-medallion-process-gold")
+        SparkSession.builder.appName("lakehouse-medallion-process-gold-from-vault")
         .master(SPARK_MASTER_URL)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
@@ -37,8 +37,16 @@ def create_spark_session() -> SparkSession:
     )
 
 
-def read_silver_table(spark: SparkSession, table_name: str) -> DataFrame:
-    return spark.read.format("delta").load(f"{SILVER_BASE_PATH}/{table_name}")
+def delete_path(spark: SparkSession, path: str) -> None:
+    hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+    fs_path = spark._jvm.org.apache.hadoop.fs.Path(path)
+    fs = fs_path.getFileSystem(hadoop_conf)
+    if fs.exists(fs_path):
+        fs.delete(fs_path, True)
+
+
+def read_vault_table(spark: SparkSession, table_name: str) -> DataFrame:
+    return spark.read.format("delta").load(f"{RAW_VAULT_BASE_PATH}/{table_name}")
 
 
 def write_gold_table(df: DataFrame, table_name: str) -> None:
@@ -50,23 +58,43 @@ def write_gold_table(df: DataFrame, table_name: str) -> None:
     )
 
 
-def build_dim_customer(customers: DataFrame) -> DataFrame:
-    return customers.select(
-        "customer_id",
-        F.concat_ws(" ", F.col("first_name"), F.col("last_name")).alias("customer_full_name"),
-        "email",
-        "phone_number",
-        "date_of_birth",
-        F.floor(F.months_between(F.current_date(), F.col("date_of_birth")) / 12).cast("int").alias("age"),
-        "city",
-        "country",
-        "customer_segment",
-        "created_at",
+def latest_satellite(df: DataFrame, hash_key_column: str) -> DataFrame:
+    window = Window.partitionBy(hash_key_column).orderBy(F.col("load_datetime").desc())
+    return df.withColumn("row_number", F.row_number().over(window)).where(F.col("row_number") == 1).drop("row_number")
+
+
+def build_dim_customer(hub_customer: DataFrame, sat_customer_profile: DataFrame) -> DataFrame:
+    sat = latest_satellite(sat_customer_profile, "customer_hk")
+    return (
+        hub_customer.join(sat, on="customer_hk", how="inner")
+        .select(
+            "customer_id",
+            F.concat_ws(" ", F.col("first_name"), F.col("last_name")).alias("customer_full_name"),
+            "email",
+            "phone_number",
+            "date_of_birth",
+            F.floor(F.months_between(F.current_date(), F.col("date_of_birth")) / 12).cast("int").alias("age"),
+            "city",
+            "country",
+            "customer_segment",
+            "created_at",
+        )
     )
 
 
-def build_dim_account(accounts: DataFrame) -> DataFrame:
-    return accounts.select(
+def build_dim_account(
+    hub_account: DataFrame,
+    hub_customer: DataFrame,
+    link_customer_account: DataFrame,
+    sat_account_details: DataFrame,
+) -> DataFrame:
+    sat = latest_satellite(sat_account_details, "account_hk")
+    account_customer = (
+        link_customer_account.join(hub_account.select("account_hk", "account_id"), on="account_hk", how="inner")
+        .join(hub_customer.select("customer_hk", "customer_id"), on="customer_hk", how="inner")
+        .select("account_hk", "account_id", "customer_id")
+    )
+    return account_customer.join(sat, on="account_hk", how="inner").select(
         "account_id",
         "customer_id",
         "account_type",
@@ -78,30 +106,50 @@ def build_dim_account(accounts: DataFrame) -> DataFrame:
     )
 
 
-def build_dim_merchant(merchants: DataFrame) -> DataFrame:
-    return merchants.select(
-        "merchant_id",
-        "merchant_name",
-        "merchant_category",
-        "city",
-        "country",
-        "risk_score",
-        F.when(F.col("risk_score") >= 80, F.lit("high"))
-        .when(F.col("risk_score") >= 50, F.lit("medium"))
-        .when(F.col("risk_score").isNotNull(), F.lit("low"))
-        .otherwise(F.lit("unknown"))
-        .alias("risk_band"),
-        "onboarded_at",
+def build_dim_merchant(hub_merchant: DataFrame, sat_merchant_details: DataFrame) -> DataFrame:
+    sat = latest_satellite(sat_merchant_details, "merchant_hk")
+    return (
+        hub_merchant.join(sat, on="merchant_hk", how="inner")
+        .select(
+            "merchant_id",
+            "merchant_name",
+            "merchant_category",
+            "city",
+            "country",
+            "risk_score",
+            F.when(F.col("risk_score") >= 80, F.lit("high"))
+            .when(F.col("risk_score") >= 50, F.lit("medium"))
+            .when(F.col("risk_score").isNotNull(), F.lit("low"))
+            .otherwise(F.lit("unknown"))
+            .alias("risk_band"),
+            "onboarded_at",
+        )
     )
 
 
 def build_fact_transactions(
-    transactions: DataFrame,
+    hub_transaction: DataFrame,
+    hub_customer: DataFrame,
+    hub_account: DataFrame,
+    hub_merchant: DataFrame,
+    link_transaction_context: DataFrame,
+    sat_transaction_details: DataFrame,
     dim_customer: DataFrame,
     dim_account: DataFrame,
     dim_merchant: DataFrame,
 ) -> DataFrame:
-    fact = transactions.select(
+    sat = latest_satellite(sat_transaction_details, "transaction_hk")
+    transaction_context = (
+        link_transaction_context.join(
+            hub_transaction.select("transaction_hk", "transaction_id"), on="transaction_hk", how="inner"
+        )
+        .join(hub_customer.select("customer_hk", "customer_id"), on="customer_hk", how="inner")
+        .join(hub_account.select("account_hk", "account_id"), on="account_hk", how="inner")
+        .join(hub_merchant.select("merchant_hk", "merchant_id"), on="merchant_hk", how="inner")
+        .select("transaction_hk", "transaction_id", "customer_id", "account_id", "merchant_id")
+    )
+
+    fact = transaction_context.join(sat, on="transaction_hk", how="inner").select(
         "transaction_id",
         "customer_id",
         "account_id",
@@ -127,16 +175,29 @@ def main() -> None:
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
-    silver_customers = read_silver_table(spark, "customers")
-    silver_accounts = read_silver_table(spark, "accounts")
-    silver_merchants = read_silver_table(spark, "merchants")
-    silver_transactions = read_silver_table(spark, "transactions")
+    delete_path(spark, GOLD_BASE_PATH)
 
-    dim_customer = build_dim_customer(silver_customers)
-    dim_account = build_dim_account(silver_accounts)
-    dim_merchant = build_dim_merchant(silver_merchants)
+    hub_customer = read_vault_table(spark, "hub_customer")
+    hub_account = read_vault_table(spark, "hub_account")
+    hub_merchant = read_vault_table(spark, "hub_merchant")
+    hub_transaction = read_vault_table(spark, "hub_transaction")
+    link_customer_account = read_vault_table(spark, "link_customer_account")
+    link_transaction_context = read_vault_table(spark, "link_transaction_context")
+    sat_customer_profile = read_vault_table(spark, "sat_customer_profile")
+    sat_account_details = read_vault_table(spark, "sat_account_details")
+    sat_merchant_details = read_vault_table(spark, "sat_merchant_details")
+    sat_transaction_details = read_vault_table(spark, "sat_transaction_details")
+
+    dim_customer = build_dim_customer(hub_customer, sat_customer_profile)
+    dim_account = build_dim_account(hub_account, hub_customer, link_customer_account, sat_account_details)
+    dim_merchant = build_dim_merchant(hub_merchant, sat_merchant_details)
     fact_transactions = build_fact_transactions(
-        silver_transactions,
+        hub_transaction,
+        hub_customer,
+        hub_account,
+        hub_merchant,
+        link_transaction_context,
+        sat_transaction_details,
         dim_customer,
         dim_account,
         dim_merchant,
@@ -155,7 +216,7 @@ def main() -> None:
         print(f"Wrote {row_count:,} rows to {GOLD_BASE_PATH}/{table_name}")
 
     spark.stop()
-    print("Gold processing completed.")
+    print("Gold processing from Data Vault completed.")
 
 
 if __name__ == "__main__":
