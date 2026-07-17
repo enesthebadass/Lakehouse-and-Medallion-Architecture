@@ -334,7 +334,9 @@ def main() -> None:
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
-    delete_path(spark, SILVER_BASE_PATH)
+    # The legacy demo owns only this path. CDC Raw Vault tables live under
+    # silver/cdc_raw_vault and must survive a fallback demo run.
+    delete_path(spark, RAW_VAULT_BASE_PATH)
 
     bronze_customers = read_bronze_table(spark, "customers")
     bronze_accounts = read_bronze_table(spark, "accounts")

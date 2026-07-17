@@ -1,0 +1,304 @@
+version: 2
+
+models:
+  - name: dim_customer_current
+    description: >-
+      Current customer dimension built from the CDC Raw Vault. Raw national ID,
+      tax ID, name, and date of birth are intentionally excluded from this BI-facing model.
+    columns:
+      - name: customer_hk
+        description: Stable Data Vault customer hash key.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_customer')
+                field: customer_hk
+      - name: customer_id
+        description: Canonical synthetic customer business key.
+        data_tests: [not_null, unique]
+      - name: customer_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["INDIVIDUAL", "CORPORATE"]
+      - name: segment_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["RETAIL", "PRIVATE", "MASS_AFFLUENT", "SME", "REVIEW_REQUIRED"]
+      - name: status_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["ACTIVE", "PASSIVE"]
+      - name: home_branch_code
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_branch')
+                field: branch_bk
+      - name: age_band
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["UNDER_18", "18_24", "25_34", "35_44", "45_54", "55_64", "65_PLUS", "UNKNOWN"]
+      - name: is_active
+        data_tests: [not_null]
+      - name: source_effective_from
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: dim_product_current
+    description: Current lending product dimension from the CDC Raw Vault.
+    columns:
+      - name: product_hk
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_product')
+                field: product_hk
+      - name: product_code
+        data_tests: [not_null, unique]
+      - name: product_name
+        data_tests: [not_null]
+      - name: product_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["CONSUMER_LOAN", "MORTGAGE", "SME_LOAN"]
+      - name: default_currency_code
+        data_tests: [not_null]
+      - name: is_active
+        data_tests: [not_null]
+      - name: source_effective_from
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: dim_branch_current
+    description: Current branch dimension used for lending performance analysis.
+    columns:
+      - name: branch_hk
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_branch')
+                field: branch_hk
+      - name: branch_code
+        data_tests: [not_null, unique]
+      - name: branch_name
+        data_tests: [not_null]
+      - name: city
+        data_tests: [not_null]
+      - name: is_active
+        data_tests: [not_null]
+      - name: source_effective_from
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: dim_currency_current
+    description: Current currency dimension; financial measures must be grouped by this dimension.
+    columns:
+      - name: currency_hk
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_currency')
+                field: currency_hk
+      - name: currency_code
+        data_tests:
+          - not_null
+          - unique
+          - accepted_values:
+              arguments:
+                values: ["TRY", "USD", "EUR"]
+      - name: currency_name
+        data_tests: [not_null]
+      - name: minor_unit
+        data_tests: [not_null]
+      - name: is_active
+        data_tests: [not_null]
+      - name: source_effective_from
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: fct_loan_applications_current
+    description: One current-state row per loan application with conformed customer and lending dimensions.
+    columns:
+      - name: loan_application_hk
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_loan_application')
+                field: loan_application_hk
+      - name: application_id
+        data_tests: [not_null, unique]
+      - name: customer_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer_current')
+                field: customer_hk
+      - name: product_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product_current')
+                field: product_hk
+      - name: branch_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_branch_current')
+                field: branch_hk
+      - name: currency_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_currency_current')
+                field: currency_hk
+      - name: requested_amount
+        data_tests: [not_null]
+      - name: term_months
+        data_tests: [not_null]
+      - name: application_status_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["PENDING", "APPROVED", "REJECTED"]
+      - name: applied_at
+        data_tests: [not_null]
+      - name: is_decided
+        data_tests: [not_null]
+      - name: is_approved
+        data_tests: [not_null]
+      - name: source_effective_from
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: fct_loans_current
+    description: One current-state row per disbursed loan with principal exposure and status indicators.
+    columns:
+      - name: loan_hk
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: source('cdc_raw_vault', 'hub_loan')
+                field: loan_hk
+      - name: loan_id
+        data_tests: [not_null, unique]
+      - name: loan_application_hk
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('fct_loan_applications_current')
+                field: loan_application_hk
+      - name: customer_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer_current')
+                field: customer_hk
+      - name: product_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product_current')
+                field: product_hk
+      - name: branch_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_branch_current')
+                field: branch_hk
+      - name: currency_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_currency_current')
+                field: currency_hk
+      - name: principal_amount
+        data_tests: [not_null]
+      - name: annual_interest_rate
+        data_tests: [not_null]
+      - name: term_months
+        data_tests: [not_null]
+      - name: loan_status_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["ACTIVE", "DELINQUENT", "CLOSED"]
+      - name: is_active
+        data_tests: [not_null]
+      - name: is_delinquent
+        data_tests: [not_null]
+      - name: source_effective_from
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: agg_customer_loan_portfolio
+    description: Customer loan portfolio aggregated separately for each currency.
+    columns:
+      - name: customer_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer_current')
+                field: customer_hk
+      - name: customer_id
+        data_tests: [not_null]
+      - name: currency_hk
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_currency_current')
+                field: currency_hk
+      - name: currency_code
+        data_tests: [not_null]
+      - name: loan_count
+        data_tests: [not_null]
+      - name: active_loan_count
+        data_tests: [not_null]
+      - name: delinquent_loan_count
+        data_tests: [not_null]
+      - name: total_principal_amount
+        data_tests: [not_null]
+      - name: dbt_loaded_at
+        data_tests: [not_null]

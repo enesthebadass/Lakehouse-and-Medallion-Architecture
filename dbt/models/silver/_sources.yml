@@ -1,0 +1,97 @@
+version: 2
+
+sources:
+  - name: cdc_raw_vault
+    description: Incremental Data Vault 2.0 Raw Vault loaded from immutable CDC Bronze events.
+    database: "{{ env_var('DBT_TRINO_CATALOG', 'lakehouse') }}"
+    schema: cdc_raw_vault
+    loader: Spark CDC Raw Vault job
+    tables:
+      - name: hub_customer
+        description: Durable customer business keys.
+        columns:
+          - name: customer_hk
+            description: SHA-256 customer hash key.
+            data_tests: [not_null, unique]
+          - name: customer_bk
+            description: Canonical source customer number.
+            data_tests: [not_null, unique]
+      - name: hub_loan_application
+        description: Durable loan application business keys.
+        columns:
+          - name: loan_application_hk
+            data_tests: [not_null, unique]
+          - name: loan_application_bk
+            data_tests: [not_null, unique]
+      - name: hub_loan
+        description: Durable loan business keys.
+        columns:
+          - name: loan_hk
+            data_tests: [not_null, unique]
+          - name: loan_bk
+            data_tests: [not_null, unique]
+      - name: hub_product
+        description: Durable product business keys.
+        columns:
+          - name: product_hk
+            data_tests: [not_null, unique]
+          - name: product_bk
+            data_tests: [not_null, unique]
+      - name: hub_branch
+        description: Durable branch business keys.
+        columns:
+          - name: branch_bk
+            data_tests: [not_null, unique]
+      - name: hub_currency
+        description: Durable currency business keys.
+        columns:
+          - name: currency_hk
+            data_tests: [not_null, unique]
+          - name: currency_bk
+            data_tests: [not_null, unique]
+      - name: link_application_context
+        description: Customer, application, product, branch, and currency relationships.
+        columns:
+          - name: application_context_hk
+            data_tests: [not_null, unique]
+          - name: loan_application_hk
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('cdc_raw_vault', 'hub_loan_application')
+                    field: loan_application_hk
+      - name: link_loan_context
+        description: Customer, loan, application, product, branch, and currency relationships.
+        columns:
+          - name: loan_context_hk
+            data_tests: [not_null, unique]
+          - name: loan_hk
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('cdc_raw_vault', 'hub_loan')
+                    field: loan_hk
+      - name: sat_customer_details
+        description: Historized customer descriptive attributes.
+        columns:
+          - name: customer_hk
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('cdc_raw_vault', 'hub_customer')
+                    field: customer_hk
+      - name: sat_loan_application_details
+        description: Historized loan application attributes.
+      - name: sat_loan_details
+        description: Historized loan attributes.
+      - name: sat_product_details
+        description: Historized product attributes.
+      - name: sat_branch_details
+        description: Historized branch attributes.
+      - name: sat_currency_details
+        description: Historized currency attributes.
+      - name: sat_source_record_status
+        description: Source-record active and deleted status history.

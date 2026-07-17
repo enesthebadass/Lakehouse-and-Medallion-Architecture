@@ -1,0 +1,22 @@
+name: lakehouse_medallion
+version: 1.0.0
+config-version: 2
+
+profile: lakehouse_medallion
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: target
+clean-targets: ["target", "dbt_packages", "logs"]
+
+models:
+  lakehouse_medallion:
+    +persist_docs:
+      relation: true
+      columns: true
+    gold:
+      +materialized: table
+      # Delta tables cannot safely use dbt-trino's rename-based replacement.
+      +on_table_exists: drop
+      +tags: ["gold"]

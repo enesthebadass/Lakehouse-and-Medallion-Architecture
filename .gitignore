@@ -26,6 +26,11 @@ metastore_db/
 derby.log
 spark-warehouse/
 
+# dbt generated artifacts
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
 # Local data exports and temporary files
 exports/
 data/

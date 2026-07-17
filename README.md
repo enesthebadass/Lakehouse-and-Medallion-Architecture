@@ -9,17 +9,21 @@ Silver, then publishes analytics-ready Kimball-style Gold tables.
 
 The repository also contains a realistic local ingestion path: a separate synthetic
 operational PostgreSQL database with `mms`, `krd`, and `prm` schemas feeds Debezium
-and Kafka through logical replication. CDC-to-Bronze landing is the next implementation
-step; the original direct-to-Bronze generator remains available as a demo fallback.
+and Kafka through logical replication. An idempotent consumer lands those events in
+immutable raw Bronze objects. The original direct-to-Bronze generator remains available
+as a demo fallback and manages only its own legacy prefixes.
 
 ## Architecture
 
 ```text
 Operational CDC path:
-Synthetic source -> PostgreSQL -> Debezium -> Kafka -> [next: CDC Bronze landing]
+Synthetic source -> PostgreSQL -> Debezium -> Kafka -> MinIO Bronze CDC
+  -> incremental Silver CDC Raw Vault Hubs, Links, Satellites, and audit controls
+  -> Hive Metastore -> Trino SQL -> dbt Gold mart -> BI
 
 Current regression/demo path:
 Faker -> Bronze JSONL -> Silver Data Vault Delta -> Gold dimensional Delta
+  -> Hive Metastore -> Trino SQL
 ```
 
 Main components:
@@ -33,14 +37,32 @@ Main components:
   prepared for the CDC pilot. It is not a copy of the bank's Oracle schemas.
 - **Debezium and Kafka Connect** capture PostgreSQL row changes from logical WAL.
 - **Apache Kafka** retains ordered CDC events for downstream Bronze ingestion.
+- **Bronze CDC Writer** stores replay-safe raw Kafka records in MinIO and commits
+  offsets only after each object write is verified.
+- **CDC Raw Vault Job** uses insert-only Delta merges to load durable business keys,
+  relationships, descriptive history, delete status, quarantine, and reconciliation
+  without rebuilding existing history.
+- **Apache Hive Metastore** keeps the technical table catalog in a dedicated
+  PostgreSQL database and resolves the Spark-written S3A table locations.
+- **Trino** exposes the Delta tables through the `lakehouse` SQL catalog for
+  analysts, validation queries, and future Power BI connectivity.
+- **dbt Core** builds documented and tested Gold SQL models from the CDC Raw Vault
+  through Trino. Its customer and lending marts deliberately exclude raw PII from
+  their BI surface.
 
 ## Repository Layout
 
 ```text
 .
 |-- dags/
+|   |-- cdc_raw_vault_dag.py
 |   `-- medallion_dag.py
 |-- cdc/
+|   |-- bronze/
+|   |   |-- Dockerfile
+|   |   |-- requirements.txt
+|   |   |-- writer.py
+|   |   `-- README.md
 |   |-- connectors/
 |   |   `-- core-banking-postgres.json
 |   |-- register_connector.py
@@ -48,7 +70,9 @@ Main components:
 |-- scripts/
 |   |-- 1_generate_bronze.py
 |   |-- 2_process_silver.py
-|   `-- 3_process_gold.py
+|   |-- 3_process_gold.py
+|   |-- 4_process_cdc_raw_vault.py
+|   `-- audit_cdc_raw_vault.py
 |-- source/
 |   |-- init/
 |   |   |-- 001_create_schemas.sql
@@ -60,9 +84,26 @@ Main components:
 |       |-- Dockerfile
 |       |-- requirements.txt
 |       `-- workload.py
+|-- hive/
+|   `-- conf/core-site.xml
+|-- trino/
+|   |-- etc/
+|   |-- register_tables.py
+|   `-- README.md
+|-- dbt/
+|   |-- models/
+|   |-- dbt_project.yml
+|   |-- profiles.yml
+|   |-- requirements.txt
+|   `-- Dockerfile
+|-- bi/
+|   |-- sql/kpi_queries.sql
+|   |-- export_powerbi_csv.sh
+|   `-- README.md
 |-- .env.example
 |-- docker-compose.yml
 |-- Dockerfile.airflow
+|-- Dockerfile.hive-metastore
 |-- requirements.txt
 `-- README.md
 ```
@@ -70,7 +111,7 @@ Main components:
 ## Prerequisites
 
 - Docker Desktop or Docker Engine with Docker Compose
-- At least 6 GB available RAM for the containers
+- At least 8 GB available RAM for the containers
 - Ports available on the host:
   - `8080` for Spark Master UI
   - `8081` for Airflow UI
@@ -79,6 +120,8 @@ Main components:
   - `5433` for the synthetic core-banking PostgreSQL source
   - `29092` for Kafka access from the host
   - `8083` for the Kafka Connect REST API
+  - `8082` for Trino UI and SQL
+  - `9083` for the local Hive Metastore Thrift service
 
 ## Quick Start
 
@@ -102,6 +145,7 @@ Open the UIs:
 | MinIO Console | <http://localhost:9001> | `minioadmin` / `minioadmin` |
 | Spark Master | <http://localhost:8080> | none |
 | Kafka Connect API | <http://localhost:8083/connectors> | none (local only) |
+| Trino | <http://localhost:8082/ui/> | any username, no password (local only) |
 
 ## Synthetic Operational Source
 
@@ -162,8 +206,16 @@ docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
 ```
 
 Topics follow `bank.core.<schema>.<table>`. The local topic, key, partition, retention,
-envelope, status, and offset contract is documented in `cdc/README.md`. No Kafka event
-is written to MinIO yet; that idempotent Bronze landing is the next implementation step.
+envelope, status, and offset contract is documented in `cdc/README.md`.
+
+The `bronze-cdc-writer` service consumes only the allowlisted `mms`, `krd`, and `prm`
+table topics. It preserves the Kafka key and full Debezium value, then writes one
+deterministically named object per topic/partition/offset. Its object contract, failure
+semantics, lag check, and replay procedure are documented in `cdc/bronze/README.md`.
+
+Trigger the Airflow DAG `cdc_raw_vault_incremental` to validate Bronze, load Hubs and
+Links, load Satellite/delete history, and reconcile source, Bronze, and Silver in four
+visible tasks. The complete contract is documented in `cdc/DATA_VAULT_MAPPING.md`.
 
 ## Run the Pipeline
 
@@ -178,6 +230,56 @@ is written to MinIO yet; that idempotent Bronze landing is the next implementati
 The first Spark run can take longer because Spark downloads Delta Lake and
 Hadoop S3 dependencies.
 
+## Register Delta Tables in Trino
+
+After the Spark pipelines have created the Delta paths, register every available
+Silver, audit, quarantine, and Gold table in the technical catalog:
+
+```bash
+docker compose run --rm trino-init
+```
+
+The command is idempotent. Required CDC Raw Vault tables fail fast when missing;
+legacy Raw Vault and Gold tables are skipped until `lakehouse_medallion_pipeline`
+has produced them. Run the command again after that DAG to add the optional tables.
+
+Query the catalog:
+
+```bash
+docker compose exec trino trino --execute \
+  "SHOW TABLES FROM lakehouse.cdc_raw_vault"
+
+docker compose exec trino trino --execute \
+  "SELECT count(*) FROM lakehouse.gold.fact_transactions"
+
+docker compose exec trino trino --execute \
+  'SELECT version, operation FROM lakehouse.cdc_raw_vault."hub_customer$history"'
+```
+
+The final query reads Delta transaction history rather than scanning a plain
+Parquet directory. See `trino/README.md` for catalog details and limitations.
+
+## Build and Test the dbt Gold Mart
+
+Register the technical schemas, then build the current customer dimension and run
+its source and model quality checks:
+
+```bash
+docker compose run --rm trino-init
+docker compose run --rm dbt debug
+docker compose run --rm dbt compile
+docker compose run --rm dbt run
+docker compose run --rm dbt test
+```
+
+The build creates seven customer and lending models under `lakehouse.gold_dbt` from
+the latest CDC Satellite records: four conformed dimensions, two facts, and a
+currency-safe portfolio aggregate. It exposes customer classification, status,
+branch, and age band while excluding name, national ID, tax ID, and date of birth.
+The local project uses `on_table_exists: drop` because rename-based table replacement
+is not safe for this Trino Delta catalog. See `dbt/README.md` for the local profile
+and `bi/README.md` for the Power BI Report Server consumption path.
+
 ## Expected Data Outputs
 
 Open MinIO Console at <http://localhost:9001>, then browse the `lakehouse`
@@ -187,6 +289,11 @@ Expected paths:
 
 ```text
 bronze/
+  cdc/
+    source=core_banking/
+      schema=<schema>/
+        table=<table>/
+          event_date=<date>/
   customers/
   accounts/
   merchants/
@@ -204,15 +311,47 @@ silver/raw_vault/
   sat_merchant_details/
   sat_transaction_details/
 
+silver/cdc_raw_vault/
+  hub_customer/
+  hub_loan_application/
+  hub_loan/
+  hub_product/
+  hub_branch/
+  hub_currency/
+  link_application_context/
+  link_loan_context/
+  sat_customer_details/
+  sat_loan_application_details/
+  sat_loan_details/
+  sat_product_details/
+  sat_branch_details/
+  sat_currency_details/
+  sat_source_record_status/
+
+silver/quarantine/
+  cdc_raw_vault_events/
+
+silver/audit/
+  cdc_raw_vault_reconciliation/
+
 gold/
+  dbt/
+    agg_customer_loan_portfolio-<generated-id>/
+    dim_branch_current-<generated-id>/
+    dim_currency_current-<generated-id>/
+    dim_customer_current-<generated-id>/
+    dim_product_current-<generated-id>/
+    fct_loan_applications_current-<generated-id>/
+    fct_loans_current-<generated-id>/
   dim_customer/
   dim_account/
   dim_merchant/
   fact_transactions/
 ```
 
-Bronze data is written as JSON Lines files. Silver and Gold data are Delta Lake
-tables, so each table contains Parquet data files and a `_delta_log` directory.
+Legacy Bronze data is written as JSON Lines files; CDC Bronze data is written as one
+raw JSON object per Kafka record. Silver and Gold data are Delta Lake tables, so each
+table contains Parquet data files and a `_delta_log` directory.
 MinIO may not preview these files directly in the browser; that is expected.
 
 ## Clean Reproducible Reset
@@ -238,7 +377,9 @@ docker exec lakehouse-medallion-demo-minio-1 sh -c "printf '' | mc pipe local/la
 docker exec lakehouse-medallion-demo-minio-1 sh -c "printf '' | mc pipe local/lakehouse/gold/.keep"
 ```
 
-After clearing the bucket, trigger the Airflow DAG again.
+After clearing the bucket, trigger the Airflow DAG again for the legacy demo path. To
+rebuild CDC Bronze as well, follow the offset reset procedure in `cdc/bronze/README.md`;
+otherwise Kafka considers the deleted events already consumed.
 
 ## Manual Execution
 
@@ -266,6 +407,27 @@ docker exec lakehouse-medallion-demo-spark-master-1 /opt/spark/bin/spark-submit 
   --conf spark.jars.ivy=/tmp/.ivy2 \
   --packages io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4 \
   /opt/spark/scripts/3_process_gold.py
+```
+
+Run the incremental CDC Raw Vault job:
+
+```bash
+docker exec lakehouse-medallion-demo-spark-master-1 /opt/spark/bin/spark-submit \
+  --driver-memory 2g \
+  --conf spark.jars.ivy=/tmp/.ivy2 \
+  --packages io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,org.postgresql:postgresql:42.7.3 \
+  /opt/spark/scripts/4_process_cdc_raw_vault.py
+```
+
+Append `--phase validate`, `core`, `satellites`, or `reconcile` to run one stage.
+Verify the resulting history and controls with:
+
+```bash
+docker exec lakehouse-medallion-demo-spark-master-1 /opt/spark/bin/spark-submit \
+  --driver-memory 2g \
+  --conf spark.jars.ivy=/tmp/.ivy2 \
+  --packages io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4 \
+  /opt/spark/scripts/audit_cdc_raw_vault.py
 ```
 
 ## Data Model
@@ -299,19 +461,20 @@ Gold stores analytics-ready dimensional tables:
 - `dim_account`
 - `dim_merchant`
 - `fact_transactions`
+- seven customer/lending models in `gold_dbt`, built and tested by dbt from the CDC Raw Vault
 
-These tables are intended for BI tools such as Power BI after exporting or
-loading them through a query layer.
+These tables are exposed through Trino for SQL clients and BI connectivity.
 
 ## Power BI Notes
 
-Power BI Desktop Report Server does not directly read Delta tables from MinIO in
-this setup. For reporting, use one of these production-style patterns:
+Power BI Desktop Report Server does not directly read Delta tables from MinIO.
+Trino now provides the local SQL serving layer at `localhost:8082`, but the Power BI
+Report Server ODBC/gateway compatibility path is intentionally left for the BI phase
+and has not yet been certified. The available patterns are:
 
-- Export Gold tables to CSV or Parquet and load them into Power BI.
-- Load Gold tables into SQL Server and connect Power BI to SQL Server.
-- Use a query engine such as Trino, Spark Thrift Server, or another SQL layer in
-  front of the lakehouse.
+- Prefer an approved Trino ODBC connection to the `lakehouse.gold` schema.
+- Load Gold tables into SQL Server when Report Server connector policy requires it.
+- Use controlled CSV or Parquet export only as a local fallback.
 
 Recommended relationships:
 

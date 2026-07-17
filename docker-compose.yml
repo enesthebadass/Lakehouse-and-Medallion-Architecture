@@ -235,6 +235,159 @@ services:
     networks:
       - lakehouse
 
+  hive-metastore-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${HIVE_METASTORE_DB_USER:-hive}
+      POSTGRES_PASSWORD: ${HIVE_METASTORE_DB_PASSWORD:-hive_metastore_local}
+      POSTGRES_DB: ${HIVE_METASTORE_DB_NAME:-metastore}
+    volumes:
+      - hive-metastore-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+  hive-metastore:
+    build:
+      context: .
+      dockerfile: Dockerfile.hive-metastore
+    image: lakehouse-medallion-demo-hive-metastore:4.2.0
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-metastore-postgres:5432/${HIVE_METASTORE_DB_NAME:-metastore}
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionUserName=${HIVE_METASTORE_DB_USER:-hive}
+        -Djavax.jdo.option.ConnectionPassword=${HIVE_METASTORE_DB_PASSWORD:-hive_metastore_local}
+        -Dhive.metastore.warehouse.dir=/opt/hive/data/warehouse
+        -Dmetastore.task.threads.always=org.apache.hadoop.hive.metastore.events.EventCleanerTask
+    ports:
+      - "${HIVE_METASTORE_HOST_PORT:-9083}:9083"
+    volumes:
+      - ./hive/conf/core-site.xml:/opt/hive/conf/core-site.xml:ro
+    depends_on:
+      hive-metastore-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9083'"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+  trino:
+    image: trinodb/trino:482
+    hostname: trino
+    ports:
+      - "${TRINO_HOST_PORT:-8082}:8080"
+    volumes:
+      - ./trino/etc:/etc/trino:ro
+      - trino-data:/data/trino
+    depends_on:
+      minio:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/lib/trino/bin/health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+  trino-init:
+    image: python:3.11-slim
+    entrypoint: ["python", "/trino/register_tables.py"]
+    environment:
+      TRINO_URL: http://trino:8080
+      TRINO_USER: lakehouse-admin
+      TRINO_CATALOG: lakehouse
+    volumes:
+      - ./trino:/trino:ro
+    depends_on:
+      trino:
+        condition: service_healthy
+    profiles:
+      - tools
+    restart: "no"
+    networks:
+      - lakehouse
+
+  dbt:
+    build:
+      context: ./dbt
+      dockerfile: Dockerfile
+    image: lakehouse-medallion-demo-dbt:1.10.2
+    environment:
+      DBT_TRINO_HOST: trino
+      DBT_TRINO_PORT: "8080"
+      DBT_TRINO_USER: dbt-local
+      DBT_TRINO_CATALOG: lakehouse
+      DBT_TRINO_SCHEMA: gold_dbt
+      DBT_PROFILES_DIR: /usr/app
+    volumes:
+      - ./dbt:/usr/app
+    depends_on:
+      trino:
+        condition: service_healthy
+    profiles:
+      - tools
+    networks:
+      - lakehouse
+
+  bronze-cdc-writer:
+    build:
+      context: ./cdc/bronze
+      dockerfile: Dockerfile
+    image: lakehouse-medallion-demo-bronze-cdc-writer:1.0
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: ${BRONZE_CDC_CONSUMER_GROUP:-bronze-cdc-writer-v1}
+      KAFKA_TOPIC_PATTERN: ${BRONZE_CDC_TOPIC_PATTERN:-^bank\.core\.(mms|krd|prm)\..+$$}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: lakehouse
+      S3_PREFIX: bronze/cdc
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      SOURCE_SYSTEM: core_banking
+      ALLOWED_SCHEMAS: mms,krd,prm
+    depends_on:
+      kafka:
+        condition: service_healthy
+      debezium-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
   spark-master:
     image: apache/spark:3.5.1-scala2.12-java17-python3-ubuntu
     command:
@@ -337,6 +490,8 @@ volumes:
   core-banking-db-volume:
   kafka-data:
   minio-data:
+  hive-metastore-postgres-data:
+  trino-data:
 
 networks:
   lakehouse:

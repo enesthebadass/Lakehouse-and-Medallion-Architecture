@@ -1,0 +1,18 @@
+FROM apache/hive:standalone-metastore-4.2.0
+
+ARG POSTGRES_JDBC_VERSION=42.7.7
+ARG POSTGRES_JDBC_SHA256=157963d60ae66d607e09466e8c0cdf8087e9cb20d0159899ffca96bca2528460
+ARG HADOOP_AWS_VERSION=3.4.1
+ARG AWS_SDK_BUNDLE_VERSION=2.24.6
+ARG AWS_SDK_BUNDLE_SHA256=890bf9f2a80488f7a8aa8277d64d13a9ea3a3cdff8607ef3b63a878d8b467b41
+
+RUN curl -fsSL \
+      "https://repo.maven.apache.org/maven2/org/postgresql/postgresql/${POSTGRES_JDBC_VERSION}/postgresql-${POSTGRES_JDBC_VERSION}.jar" \
+      -o /opt/hive/lib/postgresql.jar \
+    && echo "${POSTGRES_JDBC_SHA256}  /opt/hive/lib/postgresql.jar" | sha256sum -c - \
+    && cp "/opt/hadoop/share/hadoop/tools/lib/hadoop-aws-${HADOOP_AWS_VERSION}.jar" \
+      /opt/hive/lib/hadoop-aws.jar \
+    && curl -fsSL \
+      "https://repo.maven.apache.org/maven2/software/amazon/awssdk/bundle/${AWS_SDK_BUNDLE_VERSION}/bundle-${AWS_SDK_BUNDLE_VERSION}.jar" \
+      -o /opt/hive/lib/aws-sdk-bundle.jar \
+    && echo "${AWS_SDK_BUNDLE_SHA256}  /opt/hive/lib/aws-sdk-bundle.jar" | sha256sum -c -

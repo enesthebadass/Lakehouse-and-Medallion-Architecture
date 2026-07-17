@@ -1,7 +1,8 @@
 """Generate dirty bronze-layer JSON data for the lakehouse demo.
 
-The script is intentionally idempotent: it deletes the existing bronze table
-objects and writes fresh JSON Lines files on each run.
+The script is intentionally idempotent: it deletes only the legacy demo table
+objects it owns and writes fresh JSON Lines files on each run. CDC objects under
+``bronze/cdc`` are managed by the Bronze CDC writer and are never touched here.
 """
 
 from __future__ import annotations
@@ -244,7 +245,8 @@ def valid_ids(rows: list[dict[str, Any]], id_column: str) -> list[str]:
 def main() -> None:
     client = s3_client()
     client.head_bucket(Bucket=S3_BUCKET)
-    delete_prefix(client, "bronze/")
+    for table_key in TABLE_KEYS.values():
+        delete_prefix(client, table_key)
 
     customers = generate_customers()
     customer_ids = valid_ids(customers, "customer_id")

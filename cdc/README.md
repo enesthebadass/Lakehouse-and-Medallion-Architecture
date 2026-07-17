@@ -91,3 +91,10 @@ Reapply an updated connector configuration idempotently:
 ```bash
 docker compose run --rm debezium-init
 ```
+
+The downstream `bronze-cdc-writer` contract, object layout, failure semantics, and
+replay procedure are documented in [`bronze/README.md`](bronze/README.md).
+
+The downstream Raw Vault business-key, hash, Hub, Link, Satellite, delete, quarantine,
+and reconciliation contract is documented in
+[`DATA_VAULT_MAPPING.md`](DATA_VAULT_MAPPING.md).
