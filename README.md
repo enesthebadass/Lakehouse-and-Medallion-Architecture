@@ -7,19 +7,19 @@ The project generates intentionally dirty banking data, stores it in a Bronze
 object-storage layer, cleans and models it as a Data Vault 2.0 Raw Vault in
 Silver, then publishes analytics-ready Kimball-style Gold tables.
 
+The repository also contains a realistic local ingestion path: a separate synthetic
+operational PostgreSQL database with `mms`, `krd`, and `prm` schemas feeds Debezium
+and Kafka through logical replication. CDC-to-Bronze landing is the next implementation
+step; the original direct-to-Bronze generator remains available as a demo fallback.
+
 ## Architecture
 
 ```text
-Synthetic banking data
-        |
-        v
-Bronze - raw JSONL files in MinIO
-        |
-        v
-Silver - cleaned Data Vault 2.0 Delta tables
-        |
-        v
-Gold - dimensional Delta tables for reporting
+Operational CDC path:
+Synthetic source -> PostgreSQL -> Debezium -> Kafka -> [next: CDC Bronze landing]
+
+Current regression/demo path:
+Faker -> Bronze JSONL -> Silver Data Vault Delta -> Gold dimensional Delta
 ```
 
 Main components:
@@ -29,6 +29,10 @@ Main components:
 - **MinIO** provides a local S3-compatible object store.
 - **Delta Lake** stores Silver and Gold tables with transaction logs.
 - **PostgreSQL** stores Airflow metadata.
+- **Core Banking Source PostgreSQL** is a separate synthetic operational source
+  prepared for the CDC pilot. It is not a copy of the bank's Oracle schemas.
+- **Debezium and Kafka Connect** capture PostgreSQL row changes from logical WAL.
+- **Apache Kafka** retains ordered CDC events for downstream Bronze ingestion.
 
 ## Repository Layout
 
@@ -36,10 +40,27 @@ Main components:
 .
 |-- dags/
 |   `-- medallion_dag.py
+|-- cdc/
+|   |-- connectors/
+|   |   `-- core-banking-postgres.json
+|   |-- register_connector.py
+|   `-- README.md
 |-- scripts/
 |   |-- 1_generate_bronze.py
 |   |-- 2_process_silver.py
 |   `-- 3_process_gold.py
+|-- source/
+|   |-- init/
+|   |   |-- 001_create_schemas.sql
+|   |   |-- 002_create_source_tables.sql
+|   |   |-- 003_seed_reference_data.sql
+|   |   |-- 004_create_workload_control.sql
+|   |   `-- 005_configure_cdc.sh
+|   `-- workload/
+|       |-- Dockerfile
+|       |-- requirements.txt
+|       `-- workload.py
+|-- .env.example
 |-- docker-compose.yml
 |-- Dockerfile.airflow
 |-- requirements.txt
@@ -55,6 +76,9 @@ Main components:
   - `8081` for Airflow UI
   - `9000` for MinIO S3 API
   - `9001` for MinIO Console
+  - `5433` for the synthetic core-banking PostgreSQL source
+  - `29092` for Kafka access from the host
+  - `8083` for the Kafka Connect REST API
 
 ## Quick Start
 
@@ -77,6 +101,69 @@ Open the UIs:
 | Airflow | <http://localhost:8081> | `admin` / `admin` |
 | MinIO Console | <http://localhost:9001> | `minioadmin` / `minioadmin` |
 | Spark Master | <http://localhost:8080> | none |
+| Kafka Connect API | <http://localhost:8083/connectors> | none (local only) |
+
+## Synthetic Operational Source
+
+The `core-banking-source` service is isolated from the PostgreSQL database used by
+Airflow. On its first start it creates:
+
+- `mms`: synthetic customer-oriented source tables
+- `krd`: synthetic lending source tables
+- `prm`: synthetic reference and parameter tables
+
+These names provide realistic local namespaces only. The table structures do not
+claim to represent the bank's actual Oracle `MMS`, `KRD`, or `PRM` schemas.
+
+Inspect the schemas after the container becomes healthy:
+
+```bash
+docker compose exec core-banking-source sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dn"'
+```
+
+List the synthetic source tables:
+
+```bash
+docker compose exec core-banking-source sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN ('\''mms'\'', '\''krd'\'', '\''prm'\'') ORDER BY 1, 2;"'
+```
+
+The SQL files under `source/init/` run only when `core-banking-db-volume` is empty.
+To apply bootstrap DDL again during local development, remove the Compose volumes
+with `docker compose down -v` and start the environment again. Do not use this reset
+pattern for a production database.
+
+Create a deterministic operational snapshot and then generate transactional changes:
+
+```bash
+docker compose run --rm core-banking-workload snapshot --run-id demo-snapshot-v1
+docker compose run --rm core-banking-workload changes --run-id demo-changes-v1
+```
+
+Each change scenario commits separately and records its expected and actual outcome
+under the `simulator` control schema. Running the same completed `run-id` again does
+not duplicate data. See `source/README.md` for the scenario list and audit query.
+
+## Local CDC
+
+Kafka, Debezium Connect, and the PostgreSQL connector start with the main Compose
+environment. The connector performs an initial snapshot and then streams committed
+changes from the `lakehouse_cdc_slot` replication slot.
+
+Check the connector and list CDC topics:
+
+```bash
+curl -fsS http://localhost:8083/connectors/core-banking-postgres-cdc/status
+
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka:9092 --list
+```
+
+Topics follow `bank.core.<schema>.<table>`. The local topic, key, partition, retention,
+envelope, status, and offset contract is documented in `cdc/README.md`. No Kafka event
+is written to MinIO yet; that idempotent Bronze landing is the next implementation step.
 
 ## Run the Pipeline
 
@@ -130,7 +217,8 @@ MinIO may not preview these files directly in the browser; that is expected.
 
 ## Clean Reproducible Reset
 
-To remove all containers and volumes, including Airflow metadata and MinIO data:
+To remove all containers and volumes, including Airflow metadata, synthetic source
+data, and MinIO data:
 
 ```bash
 docker compose down -v
