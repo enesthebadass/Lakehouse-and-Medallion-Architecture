@@ -10,7 +10,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-
 TRINO_URL = os.getenv("TRINO_URL", "http://trino:8080").rstrip("/")
 TRINO_USER = os.getenv("TRINO_USER", "lakehouse-admin")
 TRINO_CATALOG = os.getenv("TRINO_CATALOG", "lakehouse")

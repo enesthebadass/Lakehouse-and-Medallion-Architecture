@@ -8,7 +8,6 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
-
 SPARK_PACKAGES = ",".join(
     [
         "io.delta:delta-spark_2.12:3.2.0",
@@ -44,7 +43,7 @@ with DAG(
     description="Bronze to Silver to Gold medallion pipeline for banking demo data.",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 1, 1),
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     tags=["lakehouse", "medallion", "delta", "banking"],
 ) as dag:

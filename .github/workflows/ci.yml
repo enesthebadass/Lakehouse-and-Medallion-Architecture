@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-quality:
+    name: Python quality and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            cdc/bronze/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install --requirement requirements-dev.txt --requirement cdc/bronze/requirements.txt
+
+      - name: Lint Python
+        run: ruff check .
+
+      - name: Compile Python
+        run: python -m compileall -q cdc dags scripts source trino tests
+
+      - name: Run Bronze writer unit tests
+        env:
+          PYTHONPATH: cdc/bronze
+        run: python -m unittest discover -s cdc/bronze -p "test_*.py" -v
+
+      - name: Validate shell scripts
+        run: |
+          bash -n bi/export_powerbi_csv.sh
+          bash -n source/init/005_configure_cdc.sh
+
+      - name: Validate YAML files
+        run: >-
+          python -c "import pathlib, yaml;
+          files=list(pathlib.Path('.').rglob('*.yml'))+list(pathlib.Path('.').rglob('*.yaml'));
+          files=[path for path in files if '.venv' not in path.parts and 'target' not in path.parts];
+          [yaml.safe_load(path.read_text()) for path in files];
+          print(f'validated {len(files)} YAML files')"
+
+  compose-validation:
+    name: Docker Compose configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate Compose model
+        run: docker compose config --quiet
+
+  airflow-dags:
+    name: Airflow DAG imports
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build Airflow image
+        run: docker build --file Dockerfile.airflow --tag lakehouse-airflow-ci:latest .
+
+      - name: Load and validate DAGs
+        run: >-
+          docker run --rm
+          --entrypoint python
+          --env AIRFLOW_DAG_FOLDER=/workspace/dags
+          --volume "${PWD}:/workspace:ro"
+          --workdir /workspace
+          lakehouse-airflow-ci:latest
+          tests/test_airflow_dags.py
+
+  dbt-integration:
+    name: dbt compile, run, and test
+    runs-on: ubuntu-latest
+    env:
+      DBT_PROFILES_DIR: dbt
+      DBT_TRINO_HOST: localhost
+      DBT_TRINO_PORT: "8082"
+      DBT_TRINO_USER: dbt-ci
+      DBT_TRINO_CATALOG: ci
+      DBT_TRINO_SCHEMA: gold_dbt
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: dbt/requirements.txt
+
+      - name: Install dbt
+        run: pip install --requirement dbt/requirements.txt
+
+      - name: Start Trino Memory catalog
+        run: >-
+          docker run --detach --rm
+          --name trino-ci
+          --publish 8082:8080
+          --volume "${PWD}/ci/trino/memory.properties:/etc/trino/catalog/ci.properties:ro"
+          trinodb/trino:482
+
+      - name: Wait for Trino
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:8082/v1/info > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs trino-ci
+          exit 1
+
+      - name: Seed deterministic Raw Vault fixture
+        run: docker exec -i trino-ci trino --file /dev/stdin < ci/trino/bootstrap.sql
+
+      - name: Validate dbt connection
+        run: dbt debug --project-dir dbt --profiles-dir dbt
+
+      - name: Compile dbt project
+        run: dbt compile --project-dir dbt --profiles-dir dbt
+
+      - name: Build dbt Gold models
+        run: dbt run --project-dir dbt --profiles-dir dbt
+
+      - name: Run dbt tests
+        run: dbt test --project-dir dbt --profiles-dir dbt
+
+      - name: Stop Trino
+        if: always()
+        run: docker stop trino-ci || true
+
+  dependency-baseline:
+    name: Dependency audit baseline
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.10.1
+
+      - name: Audit Airflow and Spark dependencies
+        continue-on-error: true
+        run: pip-audit --requirement requirements.txt
+
+      - name: Audit Bronze writer dependencies
+        continue-on-error: true
+        run: pip-audit --requirement cdc/bronze/requirements.txt
+
+      - name: Audit dbt dependencies
+        continue-on-error: true
+        run: pip-audit --requirement dbt/requirements.txt
+
+  repository-security-baseline:
+    name: Repository secret and misconfiguration baseline
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+
+  image-security-baseline:
+    name: Image baseline - ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - apache/airflow:2.9.3-python3.11
+          - trinodb/trino:482
+          - apache/spark:3.5.1-scala2.12-java17-python3-ubuntu
+    steps:
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"

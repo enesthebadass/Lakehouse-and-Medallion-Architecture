@@ -10,15 +10,15 @@ import re
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time as datetime_time, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as datetime_time
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Callable
 
 import psycopg2
 from faker import Faker
 from psycopg2.extensions import connection as Connection
 from psycopg2.extras import Json, RealDictCursor
-
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 BRANCH_CODES = ("IST001", "ANK001", "IZM001")

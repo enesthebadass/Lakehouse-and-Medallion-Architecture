@@ -1,5 +1,7 @@
 # Lakehouse and Medallion Architecture Demo
 
+[![CI](https://github.com/enesthebadass/Lakehouse-and-Medallion-Architecture/actions/workflows/ci.yml/badge.svg)](https://github.com/enesthebadass/Lakehouse-and-Medallion-Architecture/actions/workflows/ci.yml)
+
 Reproducible local demo of a banking-oriented lakehouse pipeline using Docker,
 Airflow, Spark, MinIO, and Delta Lake.
 
@@ -100,10 +102,20 @@ Main components:
 |   |-- sql/kpi_queries.sql
 |   |-- export_powerbi_csv.sh
 |   `-- README.md
+|-- ci/
+|   |-- trino/bootstrap.sql
+|   `-- README.md
+|-- tests/
+|   `-- test_airflow_dags.py
+|-- .github/
+|   |-- workflows/ci.yml
+|   `-- dependabot.yml
 |-- .env.example
 |-- docker-compose.yml
 |-- Dockerfile.airflow
 |-- Dockerfile.hive-metastore
+|-- pyproject.toml
+|-- requirements-dev.txt
 |-- requirements.txt
 `-- README.md
 ```
@@ -279,6 +291,26 @@ branch, and age band while excluding name, national ID, tax ID, and date of birt
 The local project uses `on_table_exists: drop` because rename-based table replacement
 is not safe for this Trino Delta catalog. See `dbt/README.md` for the local profile
 and `bi/README.md` for the Power BI Report Server consumption path.
+
+## Continuous Integration
+
+Every push and pull request runs blocking Python quality, Bronze writer unit, Docker
+Compose configuration, Airflow DAG import, and isolated dbt integration checks.
+Dependency, secret, configuration, and runtime image scans currently collect a
+non-blocking security baseline for remediation and policy tuning.
+
+Run the fast local checks with a Python 3.11 virtual environment:
+
+```bash
+python -m pip install -r requirements-dev.txt -r cdc/bronze/requirements.txt
+ruff check .
+python -m compileall -q cdc dags scripts source trino tests
+PYTHONPATH=cdc/bronze python -m unittest discover -s cdc/bronze -p 'test_*.py'
+docker compose config --quiet
+```
+
+The workflow and its deterministic Trino Raw Vault fixture are documented in
+`ci/README.md`.
 
 ## Expected Data Outputs
 

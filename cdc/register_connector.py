@@ -11,7 +11,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-
 CONNECT_URL = os.getenv("KAFKA_CONNECT_URL", "http://debezium-connect:8083").rstrip("/")
 CONNECTOR_NAME = os.getenv("CDC_CONNECTOR_NAME", "core-banking-postgres-cdc")
 CONFIG_PATH = Path(

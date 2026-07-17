@@ -8,7 +8,6 @@ from typing import Iterable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
 S3_BUCKET = os.getenv("S3_BUCKET", "lakehouse")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")

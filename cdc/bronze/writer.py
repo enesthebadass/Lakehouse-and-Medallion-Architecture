@@ -20,7 +20,6 @@ from botocore.exceptions import ClientError
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 from confluent_kafka.admin import AdminClient
 
-
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_CONSUMER_GROUP = os.getenv("KAFKA_CONSUMER_GROUP", "bronze-cdc-writer-v1")
 KAFKA_TOPIC_PATTERN = os.getenv(

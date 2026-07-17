@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
-
 SPARK_PACKAGES = ",".join(
     [
         "io.delta:delta-spark_2.12:3.2.0",
@@ -47,7 +46,7 @@ with DAG(
     description="Incrementally merge CDC Bronze business keys and relationships into Raw Vault.",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 1, 1),
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     tags=["lakehouse", "cdc", "data-vault", "incremental"],
 ) as dag:
