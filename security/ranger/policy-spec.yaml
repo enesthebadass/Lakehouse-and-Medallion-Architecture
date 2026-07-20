@@ -1,0 +1,99 @@
+version: 1
+status: designed_external
+minimum_ranger_version: 2.5.0
+service:
+  name: bank-lakehouse-trino
+  type: trino
+  cluster: bank-lakehouse-production
+
+external_dependencies:
+  - ranger_admin_ha
+  - enterprise_ldap_or_ad_group_sync
+  - trino_tls_and_enterprise_authentication
+  - ranger_plugin_to_admin_mtls
+  - dedicated_audit_search_store
+  - siem_forwarding
+  - secret_manager
+
+required_baseline_policies:
+  - name: execute-own-query
+    resource: {query_id: "*"}
+    subject: "{USER}"
+    access: [execute]
+  - name: self-impersonation
+    resource: {trino_user: "{USER}"}
+    subject: "{USER}"
+    access: [impersonate]
+
+data_policies:
+  - name: platform-admin
+    groups: [platform_admin]
+    resources: {catalog: lakehouse, schema: "*", table: "*", column: "*"}
+    access: [select, insert, update, delete, create, alter, drop]
+  - name: data-engineering
+    groups: [data_engineer]
+    resources: {catalog: lakehouse, schema: "*", table: "*", column: "*"}
+    access: [select, insert, update, delete, create, alter]
+  - name: dbt-source-read
+    groups: [transformation_service]
+    resources: {catalog: lakehouse, schema: cdc_raw_vault, table: "*", column: "*"}
+    access: [select]
+  - name: dbt-gold-write
+    groups: [transformation_service]
+    resources: {catalog: lakehouse, schema: gold_dbt, table: "*", column: "*"}
+    access: [select, create, alter, drop, insert, update, delete]
+  - name: analyst-gold-read
+    groups: [analyst, bi_service]
+    resources: {catalog: lakehouse, schema: "gold|gold_dbt", table: "*", column: "*"}
+    access: [select]
+  - name: auditor-read
+    groups: [auditor]
+    resources: {catalog: lakehouse, schema: "*", table: "*", column: "*"}
+    access: [select]
+
+masking_policies:
+  - name: mask-customer-sensitive-identifiers
+    groups: [auditor]
+    resources:
+      catalog: lakehouse
+      schema: cdc_raw_vault
+      table: sat_customer_details
+      columns: [national_id, tax_id]
+    mask_type: custom
+    expression: keep_last_4
+  - name: mask-customer-names
+    groups: [auditor]
+    resources:
+      catalog: lakehouse
+      schema: cdc_raw_vault
+      table: sat_customer_details
+      columns: [first_name, last_name]
+    mask_type: custom
+    expression: keep_first_character
+  - name: generalize-date-of-birth
+    groups: [auditor]
+    resources:
+      catalog: lakehouse
+      schema: cdc_raw_vault
+      table: sat_customer_details
+      columns: [date_of_birth]
+    mask_type: custom
+    expression: year_only
+
+row_filter_policies:
+  - name: branch-customer-scope
+    groups: [branch_analyst]
+    resource: {catalog: lakehouse, schema: gold_dbt, table: dim_customer_current}
+    expression: home_branch_code = '${USER_BRANCH_CODE}'
+  - name: branch-loan-scope
+    groups: [branch_analyst]
+    resource: {catalog: lakehouse, schema: gold_dbt, table: fct_loans_current}
+    expression: branch_code = '${USER_BRANCH_CODE}'
+
+audit:
+  enabled: true
+  store: dedicated_search_cluster
+  capture_allowed: true
+  capture_denied: true
+  immutable_retention: institution_policy_required
+  siem_forwarding: required

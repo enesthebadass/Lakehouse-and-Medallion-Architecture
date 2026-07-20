@@ -1,0 +1,104 @@
+services:
+  pipeline-metrics-exporter:
+    build:
+      context: ./observability/exporter
+      dockerfile: Dockerfile
+    image: lakehouse-medallion-demo-pipeline-metrics-exporter:1.0
+    environment:
+      METRICS_PORT: "9108"
+      KAFKA_CONNECT_URL: http://debezium-connect:8083
+      CDC_CONNECTOR_NAME: core-banking-postgres-cdc
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: ${BRONZE_CDC_CONSUMER_GROUP:-bronze-cdc-writer-v1}
+      AIRFLOW_DATABASE_DSN: >-
+        dbname=airflow user=airflow password=airflow host=postgres port=5432
+      TRINO_URL: http://trino:8080
+      TRINO_USER: monitoring
+    ports:
+      - "${PIPELINE_METRICS_HOST_PORT:-9108}:9108"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      debezium-connect:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9108/healthz', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    profiles: [observability]
+    networks: [lakehouse]
+
+  alertmanager:
+    image: prom/alertmanager:v0.32.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    restart: unless-stopped
+    profiles: [observability]
+    networks: [lakehouse]
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules.yml:/etc/prometheus/rules/rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    depends_on:
+      pipeline-metrics-exporter:
+        condition: service_healthy
+      alertmanager:
+        condition: service_started
+    restart: unless-stopped
+    profiles: [observability]
+    networks: [lakehouse]
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin-local-only}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
+    profiles: [observability]
+    networks: [lakehouse]
+
+volumes:
+  alertmanager-data:
+  prometheus-data:
+  grafana-data:

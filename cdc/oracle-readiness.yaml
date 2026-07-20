@@ -1,0 +1,159 @@
+version: 1
+status: designed_external
+scope:
+  local_postgresql_pilot: implemented_poc
+  oracle_logminer_connector: designed_external
+  oracle_database_validation: blocked_by_external_access
+  production_approval: pending_bank_review
+
+decision:
+  selected_adapter: debezium_oracle_logminer
+  selected_reason: >-
+    Reuses the Apache-licensed Debezium and Kafka contract without selecting the
+    commercial Oracle XStream or GoldenGate capture path.
+  not_selected:
+    xstream: requires_explicit_goldengate_license_approval
+    goldengate: commercial_product_not_required_for_current_blueprint
+    openlogreplicator: incubating_adapter_requires_direct_redo_archive_access
+  license_gate:
+    owner: oracle_license_management
+    rule: >-
+      Validate the bank's Oracle agreement and supplemental logging configuration
+      before any production enablement. Do not enable GoldenGate Supplemental Logging.
+
+event_contract:
+  canonical_topic: bank.core.<lowercase_schema>.<lowercase_table>
+  canonical_operations:
+    snapshot: r
+    create: c
+    update: u
+    delete: d
+  fields:
+    row_before:
+      postgresql: value.before
+      oracle: value.before
+      canonical: value.before
+    row_after:
+      postgresql: value.after
+      oracle: value.after
+      canonical: value.after
+    source_schema:
+      postgresql: value.source.schema
+      oracle: value.source.schema
+      canonical: _metadata.source_schema_lowercase
+    source_table:
+      postgresql: value.source.table
+      oracle: value.source.table
+      canonical: _metadata.source_table_lowercase
+    source_timestamp:
+      postgresql: value.source.ts_ms
+      oracle: value.source.ts_ms
+      canonical: _metadata.event_timestamp
+    source_position:
+      postgresql: value.source.lsn
+      oracle: value.source.scn_and_commit_scn
+      canonical: kafka_topic_partition_offset_plus_native_position
+    transaction:
+      postgresql: value.transaction.id
+      oracle: value.transaction.id
+      canonical: preserve_original_transaction_metadata
+    snapshot_marker:
+      postgresql: value.source.snapshot
+      oracle: value.source.snapshot
+      canonical: preserve_original_snapshot_metadata
+  known_adapter_differences:
+    - Oracle identifiers are commonly uppercase while the pilot contract is lowercase.
+    - Oracle ordering uses SCN and commit SCN; PostgreSQL ordering uses LSN.
+    - Oracle NUMBER and temporal mappings require data-dictionary validation.
+    - LOB, XML, spatial, object, and unsupported types require explicit handling.
+    - Source column names cannot be mapped until the approved data dictionary is supplied.
+
+snapshot_to_streaming:
+  strategy: initial_snapshot_then_continuous_logminer
+  gates:
+    - source_owner_freezes_or_controls_ddl_during_snapshot
+    - dba_confirms_undo_retention_exceeds_snapshot_duration
+    - dba_confirms_archive_retention_exceeds_outage_and_recovery_window
+    - connector_offsets_and_schema_history_topics_are_replicated_and_backed_up
+    - snapshot_counts_and_business_keys_reconcile_to_source
+    - streaming_starts_from_recorded_scn_without_event_gap
+    - duplicate_events_are_tolerated_by_bronze_and_raw_vault_idempotency
+  rollback: stop_connector_preserve_offsets_and_retain_source_logs
+
+database_prerequisites:
+  - id: oracle_topology
+    owner: oracle_dba
+    evidence: version_edition_cdb_pdb_rac_dataguard_and_service_name
+  - id: archive_log
+    owner: oracle_dba
+    evidence: archive_log_mode_and_destination_capacity
+  - id: supplemental_logging
+    owner: oracle_dba
+    evidence: database_minimum_and_allowlisted_table_logging
+  - id: archive_retention
+    owner: oracle_dba
+    evidence: measured_snapshot_outage_recovery_window_plus_safety_margin
+  - id: connector_privileges
+    owner: oracle_dba_and_security
+    evidence: least_privilege_grant_review_for_target_oracle_version
+  - id: jdbc_driver
+    owner: platform_team
+    evidence: approved_oracle_jdbc_artifact_and_license_record
+  - id: source_capacity
+    owner: oracle_dba
+    evidence: redo_archive_pga_sga_cpu_io_baseline_and_load_test
+
+external_dependencies:
+  oracle_dba:
+    - database_topology_and_version
+    - archive_and_supplemental_logging
+    - dedicated_connector_account_and_grants
+    - redo_archive_retention_and_capacity
+  source_owner:
+    - approved_schema_and_table_allowlist
+    - business_keys_and_delete_semantics
+    - maintenance_and_ddl_windows
+  security:
+    - secret_manager_identity_and_rotation
+    - tcps_wallet_or_truststore
+    - least_privilege_and_audit_approval
+  network:
+    - kafka_connect_to_oracle_route
+    - dns_firewall_and_tcps_listener
+    - no_direct_oracle_to_object_storage_route
+  license_management:
+    - oracle_contract_review
+    - confirmation_that_xstream_and_goldengate_are_not_enabled
+
+data_dictionary_discovery:
+  inputs:
+    - approved_table_and_column_inventory
+    - primary_unique_and_foreign_keys
+    - data_types_precision_scale_and_nullability
+    - comments_and_business_definitions
+    - row_counts_change_rates_and_largest_transactions
+    - pii_classification_and_retention
+    - ddl_history_and_expected_schema_changes
+  outputs:
+    - source_to_canonical_column_mapping
+    - table_include_list
+    - data_vault_business_key_mapping
+    - unsupported_type_and_lob_decisions
+    - masking_tokenization_and_access_policy
+    - snapshot_batch_and_archive_retention_estimate
+    - reconciliation_queries_and_acceptance_thresholds
+
+production_gates:
+  - license_review_approved
+  - non_production_oracle_connector_test_passed
+  - snapshot_stream_gap_and_duplicate_test_passed
+  - peak_load_and_long_transaction_test_passed
+  - failover_restart_and_offset_recovery_test_passed
+  - source_to_bronze_and_raw_vault_reconciliation_passed
+  - security_network_and_audit_review_approved
+
+non_claims:
+  - The PostgreSQL pilot does not validate Oracle LogMiner behavior or performance.
+  - This repository does not include an Oracle database or bank credentials.
+  - The template is not deployable until all placeholders and external gates are resolved.
+  - This blueprint is not legal or Oracle licensing advice.

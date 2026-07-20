@@ -362,7 +362,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONSUMER_GROUP: ${BRONZE_CDC_CONSUMER_GROUP:-bronze-cdc-writer-v1}
-      KAFKA_TOPIC_PATTERN: ${BRONZE_CDC_TOPIC_PATTERN:-^bank\.core\.(mms|krd|prm)\..+$$}
+      KAFKA_TOPIC_PATTERN: ${BRONZE_CDC_TOPIC_PATTERN:-^bank\.core\.(mms|MMS|krd|KRD|prm|PRM)\..+$$}
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: lakehouse
       S3_PREFIX: bronze/cdc

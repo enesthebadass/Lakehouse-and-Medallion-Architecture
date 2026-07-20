@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <property>
+    <name>xasecure.audit.is.enabled</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>xasecure.audit.destination.elasticsearch</name>
+    <value>enabled</value>
+  </property>
+  <property>
+    <name>xasecure.audit.destination.elasticsearch.urls</name>
+    <value>ranger-audit-search.internal.example</value>
+  </property>
+  <property>
+    <name>xasecure.audit.destination.elasticsearch.port</name>
+    <value>9200</value>
+  </property>
+  <property>
+    <name>xasecure.audit.destination.elasticsearch.protocol</name>
+    <value>https</value>
+  </property>
+  <property>
+    <name>xasecure.audit.destination.elasticsearch.index</name>
+    <value>ranger_audits_write</value>
+  </property>
+  <!-- Credentials must be supplied through the institution's secret mechanism. -->
+</configuration>

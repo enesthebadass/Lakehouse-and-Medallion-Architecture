@@ -1,0 +1,34 @@
+source:
+  type: postgres
+  serviceName: synthetic_core_banking
+  serviceConnection:
+    config:
+      type: Postgres
+      hostPort: core-banking-source:5432
+      username: ${CORE_BANKING_DB_USER}
+      authType:
+        password: ${CORE_BANKING_DB_PASSWORD}
+      database: ${CORE_BANKING_DB_NAME}
+  sourceConfig:
+    config:
+      type: DatabaseMetadata
+      schemaFilterPattern:
+        includes:
+          - ^mms$
+          - ^krd$
+          - ^prm$
+      includeTables: true
+      includeViews: true
+      includeOwners: false
+      markDeletedTables: true
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  loggerLevel: INFO
+  openMetadataServerConfig:
+    hostPort: http://openmetadata-server:8585/api
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OPENMETADATA_JWT_TOKEN}
+    storeServiceConnection: false

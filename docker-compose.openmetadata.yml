@@ -1,0 +1,168 @@
+x-openmetadata-environment: &openmetadata-environment
+  OPENMETADATA_CLUSTER_NAME: ${OPENMETADATA_CLUSTER_NAME:-lakehouse-governance}
+  SERVER_PORT: "8585"
+  SERVER_ADMIN_PORT: "8586"
+  LOG_LEVEL: ${OPENMETADATA_LOG_LEVEL:-INFO}
+  DB_DRIVER_CLASS: org.postgresql.Driver
+  DB_SCHEME: postgresql
+  DB_PARAMS: allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+  DB_USER: openmetadata_user
+  DB_USER_PASSWORD: openmetadata_password
+  DB_HOST: openmetadata-postgresql
+  DB_PORT: "5432"
+  OM_DATABASE: openmetadata_db
+  ELASTICSEARCH_HOST: openmetadata-elasticsearch
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_SCHEME: http
+  SEARCH_TYPE: elasticsearch
+  ELASTICSEARCH_CONNECTION_TIMEOUT_SECS: "5"
+  ELASTICSEARCH_SOCKET_TIMEOUT_SECS: "60"
+  ELASTICSEARCH_KEEP_ALIVE_TIMEOUT_SECS: "600"
+  ELASTICSEARCH_BATCH_SIZE: "100"
+  AUTHORIZER_CLASS_NAME: org.openmetadata.service.security.DefaultAuthorizer
+  AUTHORIZER_REQUEST_FILTER: org.openmetadata.service.security.JwtFilter
+  AUTHORIZER_ADMIN_PRINCIPALS: "[admin]"
+  AUTHORIZER_ALLOWED_REGISTRATION_DOMAIN: '["all"]'
+  AUTHORIZER_INGESTION_PRINCIPALS: "[ingestion-bot]"
+  AUTHORIZER_PRINCIPAL_DOMAIN: open-metadata.org
+  AUTHORIZER_ENFORCE_PRINCIPAL_DOMAIN: "false"
+  AUTHENTICATION_PROVIDER: basic
+  AUTHENTICATION_PUBLIC_KEYS: "[http://localhost:8585/api/v1/system/config/jwks]"
+  AUTHENTICATION_AUTHORITY: http://localhost:8585
+  AUTHENTICATION_ENABLE_SELF_SIGNUP: "false"
+  PIPELINE_SERVICE_CLIENT_ENABLED: "false"
+  SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+  SECRET_MANAGER: db
+  FERNET_KEY: ${OPENMETADATA_FERNET_KEY:-jJ/9sz0g0OHxsfxOoSfdFdmk3ysNmPRnH3TUAbz3IHA=}
+  OPENMETADATA_HEAP_OPTS: ${OPENMETADATA_HEAP_OPTS:--Xmx1G -Xms1G}
+
+services:
+  openmetadata-postgresql:
+    image: docker.getcollate.io/openmetadata/postgresql:1.13.0
+    command: --work_mem=10MB
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${OPENMETADATA_POSTGRES_PASSWORD:-password}
+    volumes:
+      - openmetadata-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "psql -U postgres -tAc 'select 1' -d openmetadata_db >/dev/null",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    profiles: ["governance"]
+    networks:
+      - lakehouse
+
+  openmetadata-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.0
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      xpack.security.enabled: "false"
+    volumes:
+      - openmetadata-elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 45s
+    restart: unless-stopped
+    profiles: ["governance"]
+    networks:
+      - lakehouse
+
+  openmetadata-migrate:
+    image: docker.getcollate.io/openmetadata/server:1.13.0
+    command: ./bootstrap/openmetadata-ops.sh migrate
+    environment: *openmetadata-environment
+    depends_on:
+      openmetadata-postgresql:
+        condition: service_healthy
+      openmetadata-elasticsearch:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["governance"]
+    networks:
+      - lakehouse
+
+  openmetadata-server:
+    image: docker.getcollate.io/openmetadata/server:1.13.0
+    environment: *openmetadata-environment
+    ports:
+      - "${OPENMETADATA_HOST_PORT:-8585}:8585"
+      - "${OPENMETADATA_ADMIN_HOST_PORT:-8586}:8586"
+    depends_on:
+      openmetadata-postgresql:
+        condition: service_healthy
+      openmetadata-elasticsearch:
+        condition: service_healthy
+      openmetadata-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8586/healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 45s
+    restart: unless-stopped
+    profiles: ["governance"]
+    networks:
+      - lakehouse
+
+  openmetadata-ingestion:
+    image: docker.getcollate.io/openmetadata/ingestion:1.13.0
+    entrypoint: ["metadata"]
+    command: ["--help"]
+    environment:
+      CORE_BANKING_DB_USER: ${CORE_BANKING_DB_USER:-core_banking}
+      CORE_BANKING_DB_PASSWORD: ${CORE_BANKING_DB_PASSWORD:-core_banking_local}
+      CORE_BANKING_DB_NAME: ${CORE_BANKING_DB_NAME:-core_banking}
+      OPENMETADATA_JWT_TOKEN: ${OPENMETADATA_JWT_TOKEN:-}
+    volumes:
+      - ./governance/ingestion:/opt/openmetadata/ingestion:ro
+      - ./dbt/target:/opt/openmetadata/dbt:ro
+    depends_on:
+      openmetadata-server:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+      core-banking-source:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["governance-tools"]
+    networks:
+      - lakehouse
+
+  openmetadata-governance-bootstrap:
+    image: docker.getcollate.io/openmetadata/ingestion:1.13.0
+    entrypoint: ["python"]
+    command: ["/opt/openmetadata/catalog/bootstrap_catalog.py"]
+    environment:
+      OPENMETADATA_HOST: http://openmetadata-server:8585/api
+      OPENMETADATA_JWT_TOKEN: ${OPENMETADATA_JWT_TOKEN:-}
+      GOVERNANCE_BLUEPRINT: /opt/openmetadata/catalog/governance-blueprint.yaml
+    volumes:
+      - ./governance/catalog:/opt/openmetadata/catalog:ro
+    depends_on:
+      openmetadata-server:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["governance-tools"]
+    networks:
+      - lakehouse
+
+volumes:
+  openmetadata-postgres-data:
+  openmetadata-elasticsearch-data:

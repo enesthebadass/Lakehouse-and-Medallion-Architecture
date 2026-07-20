@@ -50,3 +50,8 @@ docker compose exec trino trino --execute \
 Open the Trino UI at <http://localhost:8082/ui/>. The local environment intentionally
 uses no authentication and `ALLOW_ALL` catalog access. It must not be exposed outside
 the development machine.
+
+To exercise authenticated, deny-by-default authorization without changing the normal
+demo configuration, use `docker-compose.access-control.yml` and follow
+`security/README.md`. That overlay is an executable file-policy PoC; Apache Ranger
+remains the production enforcement target.

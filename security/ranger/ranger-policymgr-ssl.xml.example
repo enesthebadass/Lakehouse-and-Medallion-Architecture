@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <property>
+    <name>xasecure.policymgr.clientssl.truststore</name>
+    <value>/etc/trino/secrets/ranger-truststore.jks</value>
+  </property>
+  <property>
+    <name>xasecure.policymgr.clientssl.truststore.type</name>
+    <value>jks</value>
+  </property>
+  <property>
+    <name>xasecure.policymgr.clientssl.truststore.credential.file</name>
+    <value>jceks://file/etc/trino/secrets/ranger-credentials.jceks</value>
+  </property>
+</configuration>

@@ -1,0 +1,8 @@
+services:
+  trino:
+    volumes:
+      - ./security/trino:/etc/trino:ro
+
+  trino-init:
+    environment:
+      TRINO_PASSWORD: admin-local

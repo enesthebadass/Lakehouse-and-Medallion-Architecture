@@ -98,3 +98,14 @@ replay procedure are documented in [`bronze/README.md`](bronze/README.md).
 The downstream Raw Vault business-key, hash, Hub, Link, Satellite, delete, quarantine,
 and reconciliation contract is documented in
 [`DATA_VAULT_MAPPING.md`](DATA_VAULT_MAPPING.md).
+
+## Oracle Production Adapter Boundary
+
+The PostgreSQL connector proves the local CDC and downstream idempotency pattern; it
+does not validate Oracle LogMiner. The proposed production source adapter is defined
+by `connectors/core-banking-oracle-logminer.template.json` and the machine-readable
+readiness gates in `oracle-readiness.yaml`. It deliberately remains non-deployable
+until Oracle DBA, source-owner, security, network, and license reviews are complete.
+
+The complete Turkish readiness guide is available in
+[`../ORACLE_CDC_READINESS.md`](../ORACLE_CDC_READINESS.md).

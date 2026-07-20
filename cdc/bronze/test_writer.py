@@ -107,6 +107,34 @@ class BronzeWriterTests(unittest.TestCase):
         self.assertEqual(document["_metadata"]["operation"], "tombstone")
         self.assertEqual(record.source_table, "customer_contacts")
 
+    def test_build_record_canonicalizes_oracle_identifier_case(self):
+        envelope = {
+            "before": None,
+            "after": {"CUSTOMER_NO": "C0001"},
+            "op": "c",
+            "source": {
+                "connector": "oracle",
+                "schema": "MMS",
+                "table": "CUSTOMERS",
+                "ts_ms": 1_000,
+                "scn": "123456",
+                "commit_scn": "123460",
+            },
+        }
+        message = FakeMessage(
+            "bank.core.MMS.CUSTOMERS",
+            json.dumps({"CUSTOMER_NO": "C0001"}).encode(),
+            json.dumps(envelope).encode(),
+        )
+
+        record = writer.build_record(message)
+        document = json.loads(record.body)
+
+        self.assertEqual(record.source_schema, "mms")
+        self.assertEqual(record.source_table, "customers")
+        self.assertIn("schema=mms/table=customers", record.object_key)
+        self.assertEqual(document["value"], envelope)
+
     def test_replay_verifies_existing_object_without_overwrite(self):
         record = writer.build_record(self.message)
         client = ExistingObjectClient(record)

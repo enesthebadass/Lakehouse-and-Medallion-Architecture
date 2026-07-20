@@ -34,8 +34,20 @@ Each object contains:
 - `key`: the original Debezium Kafka key
 - `value`: the complete original Debezium envelope, or `null` for a tombstone
 
+Source schema and table names are lowercased only in `_metadata` and the object path,
+so Oracle identifiers such as `MMS.CUSTOMERS` share the canonical layout used by the
+local PostgreSQL pilot. The original Kafka key and Debezium envelope remain unchanged.
+Oracle column-name and data-type mapping belongs to a versioned Silver staging
+adapter after the real data dictionary is approved.
+
 The event ID is the SHA-256 hash of `topic:partition:offset`. The object metadata also
 stores the event ID and a checksum of the original Kafka key and value bytes.
+
+The regex consumer refreshes Kafka topic metadata every 10 seconds. This matters
+during an initial Debezium snapshot because table topics are created progressively;
+the writer must discover later topics without being restarted. The end-to-end gate
+waits until all 13 allowlisted table topics are assigned and aggregate lag remains
+zero for six consecutive samples before Silver is triggered.
 
 ## Delivery And Failure Semantics
 

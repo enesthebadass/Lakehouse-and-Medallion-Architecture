@@ -1,0 +1,87 @@
+version: 1
+status:
+  local_observability_baseline: implemented_poc
+  production_monitoring: designed_external
+
+collection:
+  prometheus:
+    status: implemented_poc
+    retention: 7d
+  grafana:
+    status: implemented_poc
+    provisioning: file_based
+  alertmanager:
+    status: implemented_poc_null_receiver
+  production_notification_route:
+    status: external
+    owner: sre_and_incident_management
+
+metrics:
+  - name: lakehouse_kafka_consumer_lag_total
+    requirement: kafka_lag
+    source: kafka_consumer_group_offsets_and_partition_high_watermarks
+    local_status: implemented_poc
+    warning_threshold: 100_for_5m
+    production_action: calibrate_from_ingestion_slo_and_peak_rate
+  - name: lakehouse_cdc_connector_up
+    requirement: connector_status
+    source: kafka_connect_rest_status
+    local_status: implemented_poc
+    critical_threshold: not_running_for_1m
+  - name: lakehouse_airflow_dag_latest_state
+    requirement: airflow_failure
+    source: airflow_metadata_database_read_only_poll
+    local_status: implemented_poc
+    critical_threshold: latest_state_failed
+    production_action: prefer_airflow_statsd_or_opentelemetry
+  - name: lakehouse_spark_task_latest_duration_seconds
+    requirement: spark_duration
+    source: airflow_spark_submit_task_duration
+    local_status: implemented_poc
+    warning_threshold: 900_seconds_for_5m
+    production_action: add_spark_metrics_and_history_server
+  - name: trino_execution_name_QueryManager_RunningQueries
+    requirement: trino_query_metrics
+    source: trino_openmetrics_endpoint
+    local_status: implemented_poc
+  - name: trino_execution_name_QueryManager_FailedQueries
+    requirement: trino_query_failures
+    source: trino_openmetrics_endpoint
+    local_status: implemented_poc
+    warning_threshold: increase_over_5m
+  - name: lakehouse_reconciliation_failures
+    requirement: data_quality_reconciliation
+    source: latest_delta_reconciliation_batch_via_trino
+    local_status: implemented_poc
+    critical_threshold: greater_than_zero
+  - name: lakehouse_gold_table_grain_valid
+    requirement: dashboard_data_quality
+    source: gold_fact_row_count_vs_distinct_grain
+    local_status: implemented_poc
+    critical_threshold: zero
+  - name: lakehouse_gold_last_load_timestamp_seconds
+    requirement: dashboard_freshness
+    source: gold_dbt_loaded_at
+    local_status: implemented_poc
+    warning_threshold: older_than_24h
+
+service_objectives:
+  status: provisional_requires_business_approval
+  local_poc:
+    ingestion_rpo: best_effort_with_7d_kafka_retention
+    platform_rto: 4h_manual_restore_target
+    dashboard_freshness: 24h_manual_pipeline_target
+  production_inputs_required:
+    - business_criticality_by_dataset
+    - legal_and_regulatory_retention
+    - source_replay_window
+    - peak_event_rate_and_largest_transaction
+    - infrastructure_ha_and_backup_capability
+    - incident_support_hours_and_escalation_matrix
+
+non_claims:
+  - The local single-node Prometheus and Grafana services are not highly available.
+  - The local Alertmanager receiver does not send external notifications.
+  - Airflow database polling is a PoC adapter, not the production telemetry path.
+  - Spark task duration includes Airflow SparkSubmitOperator overhead.
+  - Thresholds are local baselines and are not bank-approved SLOs.

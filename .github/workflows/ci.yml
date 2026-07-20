@@ -36,16 +36,36 @@ jobs:
         run: ruff check .
 
       - name: Compile Python
-        run: python -m compileall -q cdc dags scripts source trino tests
+        run: python -m compileall -q cdc dags observability scripts security source trino tests
 
       - name: Run Bronze writer unit tests
         env:
           PYTHONPATH: cdc/bronze
         run: python -m unittest discover -s cdc/bronze -p "test_*.py" -v
 
+      - name: Validate governance blueprint
+        run: python tests/test_governance_blueprint.py
+
+      - name: Validate access-control policies
+        run: python tests/test_access_control_policy.py
+
+      - name: Validate platform blueprint
+        run: python tests/test_platform_blueprint.py
+
+      - name: Validate Oracle CDC blueprint
+        run: python tests/test_oracle_cdc_blueprint.py
+
+      - name: Validate observability blueprint
+        run: python tests/test_observability_blueprint.py
+
+      - name: Validate final PoC package
+        run: python tests/test_final_package.py
+
       - name: Validate shell scripts
         run: |
           bash -n bi/export_powerbi_csv.sh
+          bash -n operations/end_to_end_smoke_test.sh
+          bash -n operations/reproducibility_test.sh
           bash -n source/init/005_configure_cdc.sh
 
       - name: Validate YAML files
@@ -64,7 +84,31 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Validate Compose model
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose \
+            --file docker-compose.yml \
+            --file docker-compose.openmetadata.yml \
+            --profile governance \
+            config --quiet
+          docker compose \
+            --file docker-compose.yml \
+            --file docker-compose.access-control.yml \
+            config --quiet
+          docker compose \
+            --file docker-compose.yml \
+            --file docker-compose.observability.yml \
+            --profile observability \
+            config --quiet
+
+      - name: Validate Prometheus configuration and rules
+        run: |
+          docker run --rm \
+            --entrypoint promtool \
+            --volume "${PWD}/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            --volume "${PWD}/observability/prometheus/rules.yml:/etc/prometheus/rules/rules.yml:ro" \
+            prom/prometheus:v3.12.0 \
+            check config /etc/prometheus/prometheus.yml
 
   airflow-dags:
     name: Airflow DAG imports
@@ -85,6 +129,20 @@ jobs:
           --workdir /workspace
           lakehouse-airflow-ci:latest
           tests/test_airflow_dags.py
+
+  policy-as-code:
+    name: OPA admission policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run OPA unit tests
+        run: >-
+          docker run --rm
+          --volume "${PWD}/platform/policies:/policies:ro"
+          openpolicyagent/opa:1.17.0-static@sha256:94830e998dd9df8e49a61826f1ad03d8a68d3ecd52f105e06a2adb93b459ad46
+          test /policies --verbose --fail-on-empty
 
   dbt-integration:
     name: dbt compile, run, and test
@@ -143,6 +201,9 @@ jobs:
 
       - name: Run dbt tests
         run: dbt test --project-dir dbt --profiles-dir dbt
+
+      - name: Generate dbt catalog artifact
+        run: dbt docs generate --project-dir dbt --profiles-dir dbt
 
       - name: Stop Trino
         if: always()

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <property>
+    <name>ranger.plugin.trino.policy.rest.url</name>
+    <value>https://ranger-admin.internal.example:6182</value>
+  </property>
+  <property>
+    <name>ranger.plugin.trino.access.cluster.name</name>
+    <value>bank-lakehouse-production</value>
+  </property>
+  <property>
+    <name>ranger.plugin.trino.use.rangerGroups</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>ranger.plugin.trino.use.only.rangerGroups</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>ranger.plugin.trino.super.users</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.plugin.trino.super.groups</name>
+    <value></value>
+  </property>
+</configuration>

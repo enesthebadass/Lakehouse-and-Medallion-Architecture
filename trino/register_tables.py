@@ -7,11 +7,13 @@ import os
 import time
 import urllib.error
 import urllib.request
+from base64 import b64encode
 from dataclasses import dataclass
 from typing import Any
 
 TRINO_URL = os.getenv("TRINO_URL", "http://trino:8080").rstrip("/")
 TRINO_USER = os.getenv("TRINO_USER", "lakehouse-admin")
+TRINO_PASSWORD = os.getenv("TRINO_PASSWORD", "")
 TRINO_CATALOG = os.getenv("TRINO_CATALOG", "lakehouse")
 TRINO_STARTUP_TIMEOUT_SECONDS = int(os.getenv("TRINO_STARTUP_TIMEOUT_SECONDS", "120"))
 
@@ -120,6 +122,15 @@ class TrinoQueryError(RuntimeError):
     pass
 
 
+def trino_headers() -> dict[str, str]:
+    headers = {"X-Trino-User": TRINO_USER}
+    if TRINO_PASSWORD:
+        credentials = b64encode(f"{TRINO_USER}:{TRINO_PASSWORD}".encode()).decode()
+        headers["Authorization"] = f"Basic {credentials}"
+        headers["X-Forwarded-Proto"] = "https"
+    return headers
+
+
 def request_json(request: urllib.request.Request) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -135,7 +146,7 @@ def execute(sql: str) -> list[list[Any]]:
         data=sql.encode("utf-8"),
         headers={
             "Content-Type": "text/plain; charset=utf-8",
-            "X-Trino-User": TRINO_USER,
+            **trino_headers(),
         },
         method="POST",
     )
@@ -151,10 +162,12 @@ def execute(sql: str) -> list[list[Any]]:
         next_uri = page.get("nextUri")
         if not next_uri:
             return rows
+        if TRINO_URL.startswith("http://") and next_uri.startswith("https://"):
+            next_uri = "http://" + next_uri.removeprefix("https://")
         page = request_json(
             urllib.request.Request(
                 next_uri,
-                headers={"X-Trino-User": TRINO_USER},
+                headers=trino_headers(),
                 method="GET",
             )
         )

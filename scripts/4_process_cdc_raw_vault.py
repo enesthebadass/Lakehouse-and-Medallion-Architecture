@@ -271,6 +271,11 @@ def valid_business_key(column: Column) -> Column:
     return value.isNotNull() & (value != "")
 
 
+def envelope_field(image: str, field_name: str) -> Column:
+    """Read a Debezium image field without depending on inferred struct members."""
+    return F.get_json_object(F.to_json(F.col(f"value.{image}")), f"$.{field_name}")
+
+
 def hash_key(namespace: str, *columns: Column) -> Column:
     components = [F.lit(namespace), *(canonical_value(column) for column in columns)]
     return F.sha2(F.concat_ws(HASH_DELIMITER, *components), 256)
@@ -337,7 +342,7 @@ def keep_first_arrival(df: DataFrame, hash_key_column: str) -> DataFrame:
 
 
 def build_hub(events: DataFrame, mapping: HubMapping) -> DataFrame:
-    business_key = F.col(f"value.after.{mapping.source_column}")
+    business_key = envelope_field("after", mapping.source_column)
     candidates = source_records(
         events, mapping.source_schema, mapping.source_table
     ).filter(valid_business_key(business_key))
@@ -359,15 +364,13 @@ def build_link_application_context(events: DataFrame) -> DataFrame:
         "currency_code",
     )
     for column_name in required:
-        records = records.filter(
-            valid_business_key(F.col(f"value.after.{column_name}"))
-        )
+        records = records.filter(valid_business_key(envelope_field("after", column_name)))
 
-    application = F.col("value.after.application_no")
-    customer = F.col("value.after.customer_no")
-    product = F.col("value.after.product_code")
-    branch = F.col("value.after.branch_code")
-    currency = F.col("value.after.currency_code")
+    application = envelope_field("after", "application_no")
+    customer = envelope_field("after", "customer_no")
+    product = envelope_field("after", "product_code")
+    branch = envelope_field("after", "branch_code")
+    currency = envelope_field("after", "currency_code")
     link = records.select(
         hash_key(
             "APPLICATION_CONTEXT", application, customer, product, branch, currency
@@ -393,27 +396,25 @@ def build_link_loan_context(events: DataFrame) -> DataFrame:
         "currency_code",
     )
     for column_name in required:
-        records = records.filter(
-            valid_business_key(F.col(f"value.after.{column_name}"))
-        )
+        records = records.filter(valid_business_key(envelope_field("after", column_name)))
 
-    loan = F.col("value.after.loan_no")
-    customer = F.col("value.after.customer_no")
-    product = F.col("value.after.product_code")
-    branch = F.col("value.after.branch_code")
-    currency = F.col("value.after.currency_code")
+    loan = envelope_field("after", "loan_no")
+    customer = envelope_field("after", "customer_no")
+    product = envelope_field("after", "product_code")
+    branch = envelope_field("after", "branch_code")
+    currency = envelope_field("after", "currency_code")
 
     # loans carries the application technical ID but not application_no. Resolve the
     # durable application business key from application CDC history before hashing.
     applications = latest_source_state(
         events, "krd", "loan_applications", "application_id"
     ).select(
-        F.col("value.after.application_id").alias("application_id"),
-        F.col("value.after.application_no").alias("application_no"),
+        envelope_field("after", "application_id").alias("application_id"),
+        envelope_field("after", "application_no").alias("application_no"),
     )
     records = records.join(
         applications,
-        F.col("value.after.application_id") == F.col("application_id"),
+        envelope_field("after", "application_id") == F.col("application_id"),
         "inner",
     ).filter(valid_business_key(F.col("application_no")))
 
@@ -437,7 +438,7 @@ def latest_source_state(
     events: DataFrame, source_schema: str, source_table: str, source_primary_key: str
 ) -> DataFrame:
     records = source_records(events, source_schema, source_table)
-    order = Window.partitionBy(F.col(f"value.after.{source_primary_key}")).orderBy(
+    order = Window.partitionBy(envelope_field("after", source_primary_key)).orderBy(
         F.col("_metadata.event_timestamp").desc_nulls_last(),
         F.col("_metadata.kafka_offset").desc(),
     )
@@ -449,11 +450,11 @@ def latest_source_state(
 
 
 def build_satellite(events: DataFrame, mapping: SatelliteMapping) -> DataFrame:
-    business_key = F.col(f"value.after.{mapping.business_key_column}")
+    business_key = envelope_field("after", mapping.business_key_column)
     records = source_records(
         events, mapping.source_schema, mapping.source_table
     ).filter(valid_business_key(business_key))
-    payload = [F.col(f"value.after.{name}") for name in mapping.payload_columns]
+    payload = [envelope_field("after", name) for name in mapping.payload_columns]
     staged = records.select(
         hash_key(mapping.parent_namespace, business_key).alias(mapping.parent_hash_key),
         hash_key(f"{mapping.table_name.upper()}_HASHDIFF", *payload).alias("hashdiff"),
@@ -564,7 +565,7 @@ def build_quarantine(events: DataFrame) -> DataFrame:
     quarantine = quarantine_projection(invalid_contract, F.col("_reason"))
 
     for mapping in HUB_MAPPINGS:
-        business_key = F.col(f"value.after.{mapping.source_column}")
+        business_key = envelope_field("after", mapping.source_column)
         invalid_key = source_records(
             events, mapping.source_schema, mapping.source_table
         ).filter(~valid_business_key(business_key))

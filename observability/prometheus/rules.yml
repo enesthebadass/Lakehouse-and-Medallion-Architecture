@@ -1,0 +1,136 @@
+groups:
+  - name: lakehouse-availability
+    rules:
+      - alert: LakehouseScrapeTargetDown
+        expr: up{job=~"lakehouse-pipeline|trino"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: observability
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}"
+          runbook: "OPERATIONS_RUNBOOK.md#incident-response"
+
+      - alert: LakehouseCollectorDown
+        expr: lakehouse_observability_collector_up == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: observability
+        annotations:
+          summary: "Pipeline collector {{ $labels.collector }} is failing"
+          runbook: "OPERATIONS_RUNBOOK.md#metrics-collector-failure"
+
+      - alert: CdcConnectorDown
+        expr: lakehouse_cdc_connector_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: cdc
+        annotations:
+          summary: "CDC connector {{ $labels.connector }} is not running"
+          runbook: "OPERATIONS_RUNBOOK.md#cdc-connector-or-kafka-lag"
+
+      - alert: KafkaConsumerLagHigh
+        expr: lakehouse_kafka_consumer_lag_total > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: kafka
+        annotations:
+          summary: "Bronze CDC consumer lag is above the local threshold"
+          runbook: "OPERATIONS_RUNBOOK.md#cdc-connector-or-kafka-lag"
+
+  - name: lakehouse-pipeline
+    rules:
+      - alert: AirflowLatestDagRunFailed
+        expr: lakehouse_airflow_dag_latest_state{state="failed"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: airflow
+        annotations:
+          summary: "Latest run of {{ $labels.dag_id }} failed"
+          runbook: "OPERATIONS_RUNBOOK.md#airflow-or-spark-failure"
+
+      - alert: SparkLatestTaskFailed
+        expr: lakehouse_spark_task_latest_state{state=~"failed|upstream_failed"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: spark
+        annotations:
+          summary: "Latest Spark task {{ $labels.task_id }} failed"
+          runbook: "OPERATIONS_RUNBOOK.md#airflow-or-spark-failure"
+
+      - alert: SparkTaskDurationHigh
+        expr: lakehouse_spark_task_latest_duration_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+          service: spark
+        annotations:
+          summary: "Spark task {{ $labels.task_id }} exceeded 15 minutes"
+          runbook: "OPERATIONS_RUNBOOK.md#airflow-or-spark-failure"
+
+      - alert: TrinoQueryFailuresDetected
+        expr: increase(trino_execution_name_QueryManager_FailedQueries[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: trino
+        annotations:
+          summary: "Trino query failures increased in the last five minutes"
+          runbook: "OPERATIONS_RUNBOOK.md#trino-query-failure"
+
+  - name: lakehouse-data-quality
+    rules:
+      - alert: ReconciliationFailed
+        expr: lakehouse_reconciliation_failures > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: data-quality
+        annotations:
+          summary: "Latest source/Bronze/Raw Vault reconciliation failed"
+          runbook: "OPERATIONS_RUNBOOK.md#reconciliation-or-gold-quality-failure"
+
+      - alert: ReconciliationStale
+        expr: time() - lakehouse_reconciliation_last_check_timestamp_seconds > 86400
+        for: 15m
+        labels:
+          severity: warning
+          service: data-quality
+        annotations:
+          summary: "No reconciliation check has been recorded for 24 hours"
+          runbook: "OPERATIONS_RUNBOOK.md#reconciliation-or-gold-quality-failure"
+
+      - alert: GoldTableEmpty
+        expr: lakehouse_gold_table_rows == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: gold
+        annotations:
+          summary: "Gold table {{ $labels.table }} is empty"
+          runbook: "OPERATIONS_RUNBOOK.md#reconciliation-or-gold-quality-failure"
+
+      - alert: GoldGrainViolation
+        expr: lakehouse_gold_table_grain_valid == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: gold
+        annotations:
+          summary: "Gold table {{ $labels.table }} violates its declared grain"
+          runbook: "OPERATIONS_RUNBOOK.md#reconciliation-or-gold-quality-failure"
+
+      - alert: GoldLoadStale
+        expr: time() - lakehouse_gold_last_load_timestamp_seconds > 86400
+        for: 15m
+        labels:
+          severity: warning
+          service: gold
+        annotations:
+          summary: "Gold table {{ $labels.table }} has not loaded for 24 hours"
+          runbook: "OPERATIONS_RUNBOOK.md#reconciliation-or-gold-quality-failure"

@@ -1,0 +1,96 @@
+version: 1
+status:
+  docker_compose: implemented_local
+  opa_offline_policy: implemented_poc
+  kubernetes: designed_external
+  openshift: designed_external
+  gatekeeper: designed_external
+
+runtime_decision:
+  local: docker_compose
+  production_candidates: [openshift, kubernetes, institution_container_platform]
+  final_selection: pending_platform_architecture_board
+  selection_gates:
+    - institution_support_model
+    - existing_operator_catalog
+    - identity_and_secret_integrations
+    - network_and_storage_certification
+    - disaster_recovery_capability
+
+namespaces:
+  - {name: lakehouse-orchestration, owner: data_platform, purpose: airflow}
+  - {name: lakehouse-processing, owner: data_engineering, purpose: spark_jobs}
+  - {name: lakehouse-streaming, owner: streaming_platform, purpose: kafka_and_cdc}
+  - {name: lakehouse-serving, owner: data_platform, purpose: trino}
+  - {name: lakehouse-governance, owner: data_governance, purpose: openmetadata_and_ranger}
+  - {name: lakehouse-observability, owner: sre, purpose: metrics_logs_and_alerts}
+
+components:
+  - name: airflow
+    namespace: lakehouse-orchestration
+    platform_owner: data_platform
+    application_owner: data_engineering
+    workload_pattern: official_helm_chart_or_institution_operator
+    state: external_postgresql
+    production_requirements: [ha_scheduler, remote_logs, git_synced_dags, workload_identity]
+  - name: spark
+    namespace: lakehouse-processing
+    platform_owner: data_platform
+    application_owner: data_engineering
+    workload_pattern: spark_operator_or_approved_enterprise_cluster
+    state: ephemeral_jobs
+    production_requirements: [dynamic_allocation_review, shuffle_strategy, driver_rbac, object_store_identity]
+  - name: kafka
+    namespace: lakehouse-streaming
+    platform_owner: streaming_platform
+    application_owner: data_engineering
+    workload_pattern: institution_managed_kafka_or_approved_operator
+    state: persistent_cluster
+    production_requirements: [multi_az, tls, acl, schema_contract, backup_and_recovery]
+  - name: trino
+    namespace: lakehouse-serving
+    platform_owner: data_platform
+    application_owner: analytics_platform
+    workload_pattern: approved_helm_release
+    state: stateless_compute_with_external_metastore
+    production_requirements: [separate_coordinator_workers, autoscaling_review, tls, ranger_plugin, resource_groups]
+  - name: openmetadata
+    namespace: lakehouse-governance
+    platform_owner: data_platform
+    application_owner: data_governance
+    workload_pattern: approved_helm_release
+    state: external_postgresql_and_search
+    production_requirements: [sso, ha, backup_restore, search_reindex_runbook, ingestion_service_accounts]
+  - name: ranger
+    namespace: lakehouse-governance
+    platform_owner: security_platform
+    application_owner: data_security
+    workload_pattern: institution_approved_deployment
+    state: external_database_and_audit_store
+    production_requirements: [ha_admin, ldap_sync, mtls, audit_siem, policy_approval]
+
+shared_external_services:
+  - object_storage
+  - secrets_manager
+  - container_registry
+  - enterprise_identity
+  - certificate_authority
+  - dns_and_load_balancer
+  - monitoring_and_siem
+
+network_zones:
+  ingestion: [lakehouse-streaming, lakehouse-processing]
+  serving: [lakehouse-serving]
+  governance: [lakehouse-governance]
+  operations: [lakehouse-orchestration, lakehouse-observability]
+
+baseline_controls:
+  pod_security_standard: restricted
+  default_deny_network_policy: true
+  approved_registry_only: true
+  immutable_image_digest: true
+  non_root: true
+  resource_requests_and_limits: true
+  external_secret_delivery: true
+  tls_in_transit: true
+  encryption_at_rest: true

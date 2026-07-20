@@ -1,0 +1,42 @@
+{
+  "catalogs": [
+    {"user": "lakehouse-admin|data-engineer|dbt-local", "catalog": "lakehouse", "allow": "all"},
+    {"user": "openmetadata-ingestion|analyst|branch-analyst|auditor|bi-service", "catalog": "lakehouse", "allow": "read-only"},
+    {"catalog": "lakehouse", "allow": "none"}
+  ],
+  "schemas": [
+    {"user": "lakehouse-admin|data-engineer", "catalog": "lakehouse", "schema": ".*", "owner": true},
+    {"user": "dbt-local", "catalog": "lakehouse", "schema": "gold_dbt", "owner": true},
+    {"owner": false}
+  ],
+  "tables": [
+    {"user": "lakehouse-admin|data-engineer", "catalog": "lakehouse", "schema": ".*", "table": ".*", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP"]},
+    {"user": "dbt-local", "catalog": "lakehouse", "schema": "cdc_raw_vault", "table": ".*", "privileges": ["SELECT"]},
+    {"user": "dbt-local", "catalog": "lakehouse", "schema": "gold_dbt", "table": ".*", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP"]},
+    {"user": "openmetadata-ingestion", "catalog": "lakehouse", "schema": "cdc_raw_vault|gold_dbt", "table": ".*", "privileges": ["SELECT"]},
+    {"user": "branch-analyst", "catalog": "lakehouse", "schema": "gold_dbt", "table": "dim_customer_current", "privileges": ["SELECT"], "filter": "home_branch_code = 'BR001'"},
+    {"user": "branch-analyst", "catalog": "lakehouse", "schema": "gold_dbt", "table": "fct_loans_current", "privileges": ["SELECT"], "filter": "branch_code = 'BR001'"},
+    {"user": "analyst|bi-service", "catalog": "lakehouse", "schema": "gold|gold_dbt", "table": ".*", "privileges": ["SELECT"]},
+    {
+      "user": "auditor",
+      "catalog": "lakehouse",
+      "schema": "cdc_raw_vault",
+      "table": "sat_customer_details",
+      "privileges": ["SELECT"],
+      "columns": [
+        {"name": "national_id", "mask": "IF(national_id IS NULL, NULL, lpad(substr(national_id, -4), length(national_id), '*'))"},
+        {"name": "tax_id", "mask": "IF(tax_id IS NULL, NULL, lpad(substr(tax_id, -4), length(tax_id), '*'))"},
+        {"name": "first_name", "mask": "IF(first_name IS NULL, NULL, rpad(substr(first_name, 1, 1), length(first_name), '*'))"},
+        {"name": "last_name", "mask": "IF(last_name IS NULL, NULL, rpad(substr(last_name, 1, 1), length(last_name), '*'))"},
+        {"name": "date_of_birth", "mask": "IF(date_of_birth IS NULL, NULL, concat(substr(date_of_birth, 1, 4), '-01-01'))"}
+      ]
+    },
+    {"user": "auditor", "catalog": "lakehouse", "schema": ".*", "table": ".*", "privileges": ["SELECT"]},
+    {"privileges": []}
+  ],
+  "system_information": [
+    {"user": "lakehouse-admin", "allow": ["read", "write"]},
+    {"user": "data-engineer|auditor", "allow": ["read"]},
+    {"allow": []}
+  ]
+}

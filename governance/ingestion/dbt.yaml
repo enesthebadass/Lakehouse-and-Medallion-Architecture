@@ -1,0 +1,26 @@
+source:
+  type: dbt
+  serviceName: lakehouse_trino
+  sourceConfig:
+    config:
+      type: DBT
+      dbtConfigSource:
+        dbtConfigType: local
+        dbtManifestFilePath: /opt/openmetadata/dbt/manifest.json
+        dbtCatalogFilePath: /opt/openmetadata/dbt/catalog.json
+        dbtRunResultsFilePath: /opt/openmetadata/dbt/run_results.json
+      dbtUpdateDescriptions: true
+      dbtUpdateOwners: false
+      includeTags: true
+      dbtClassificationName: dbtTags
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  loggerLevel: INFO
+  openMetadataServerConfig:
+    hostPort: http://openmetadata-server:8585/api
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OPENMETADATA_JWT_TOKEN}
+    storeServiceConnection: true

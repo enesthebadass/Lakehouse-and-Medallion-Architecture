@@ -17,11 +17,20 @@ as a demo fallback and manages only its own legacy prefixes.
 
 ## Architecture
 
+The editable diagrams.net source is
+[`LAKEHOUSE_ARCHITECTURE.drawio`](LAKEHOUSE_ARCHITECTURE.drawio). Its first page
+shows the verified local PoC; the second separates the bank integration target and
+external production gates.
+
 ```text
 Operational CDC path:
 Synthetic source -> PostgreSQL -> Debezium -> Kafka -> MinIO Bronze CDC
   -> incremental Silver CDC Raw Vault Hubs, Links, Satellites, and audit controls
   -> Hive Metastore -> Trino SQL -> dbt Gold mart -> BI
+
+Production source blueprint:
+Oracle -> Debezium Oracle LogMiner adapter -> Kafka -> the governed CDC contract
+(requires Oracle DBA, license, security, network, and source-owner approval)
 
 Current regression/demo path:
 Faker -> Bronze JSONL -> Silver Data Vault Delta -> Gold dimensional Delta
@@ -51,6 +60,13 @@ Main components:
 - **dbt Core** builds documented and tested Gold SQL models from the CDC Raw Vault
   through Trino. Its customer and lending marts deliberately exclude raw PII from
   their BI surface.
+- **OpenMetadata** provides the optional searchable governance catalog, dbt metadata,
+  glossary, domain, ownership, classification, and lineage surface. It does not
+  replace Hive Metastore or enforce Trino query authorization.
+- **Prometheus and the pipeline metrics exporter** collect CDC status, Kafka lag,
+  Airflow/Spark execution, Trino query, reconciliation, and Gold freshness signals.
+- **Grafana and Alertmanager** provide a provisioned operations dashboard and local
+  alert evaluation. The local Alertmanager deliberately has no notification receiver.
 
 ## Repository Layout
 
@@ -66,7 +82,9 @@ Main components:
 |   |   |-- writer.py
 |   |   `-- README.md
 |   |-- connectors/
-|   |   `-- core-banking-postgres.json
+|   |   |-- core-banking-postgres.json
+|   |   `-- core-banking-oracle-logminer.template.json
+|   |-- oracle-readiness.yaml
 |   |-- register_connector.py
 |   `-- README.md
 |-- scripts/
@@ -105,13 +123,47 @@ Main components:
 |-- ci/
 |   |-- trino/bootstrap.sql
 |   `-- README.md
+|-- governance/
+|   |-- catalog/governance-blueprint.yaml
+|   |-- ingestion/
+|   `-- README.md
+|-- security/
+|   |-- ranger/
+|   |-- trino/
+|   |-- access-matrix.yaml
+|   |-- verify_access_control.py
+|   `-- README.md
+|-- platform/
+|   |-- kubernetes/examples/
+|   |-- policies/kubernetes/
+|   |-- deployment-responsibilities.yaml
+|   |-- iam-group-mapping.yaml
+|   `-- README.md
+|-- observability/
+|   |-- exporter/
+|   |-- prometheus/
+|   |-- alertmanager/
+|   |-- grafana/
+|   `-- metric-contract.yaml
+|-- operations/
+|   |-- end_to_end_smoke_test.sh
+|   `-- reproducibility_test.sh
 |-- tests/
-|   `-- test_airflow_dags.py
+|   |-- test_airflow_dags.py
+|   |-- test_access_control_policy.py
+|   |-- test_platform_blueprint.py
+|   |-- test_governance_blueprint.py
+|   |-- test_observability_blueprint.py
+|   `-- test_final_package.py
 |-- .github/
 |   |-- workflows/ci.yml
 |   `-- dependabot.yml
 |-- .env.example
 |-- docker-compose.yml
+|-- docker-compose.access-control.yml
+|-- docker-compose.openmetadata.yml
+|-- docker-compose.observability.yml
+|-- OPERATIONS_RUNBOOK.md
 |-- Dockerfile.airflow
 |-- Dockerfile.hive-metastore
 |-- pyproject.toml
@@ -134,14 +186,26 @@ Main components:
   - `8083` for the Kafka Connect REST API
   - `8082` for Trino UI and SQL
   - `9083` for the local Hive Metastore Thrift service
+  - `8585` for the optional OpenMetadata UI and API
+  - `8586` for the optional OpenMetadata admin health endpoint
+  - `3000` for the optional Grafana UI
+  - `9090` for the optional Prometheus UI
+  - `9093` for the optional Alertmanager UI
+  - `9108` for the optional pipeline metrics endpoint
 
 ## Quick Start
 
 From the repository root:
 
 ```bash
+docker compose up -d --build core-banking-source
+docker compose --profile tools run --rm core-banking-workload snapshot --run-id quickstart-snapshot-v1
 docker compose up -d --build
 ```
+
+Starting the source and creating its deterministic baseline before the remaining
+services ensures that Debezium's initial snapshot sees the complete operational
+dataset. Reusing the same completed run ID is idempotent.
 
 Check that the services are healthy:
 
@@ -158,6 +222,7 @@ Open the UIs:
 | Spark Master | <http://localhost:8080> | none |
 | Kafka Connect API | <http://localhost:8083/connectors> | none (local only) |
 | Trino | <http://localhost:8082/ui/> | any username, no password (local only) |
+| OpenMetadata (optional) | <http://localhost:8585> | `admin@open-metadata.org` / `admin` (local only) |
 
 ## Synthetic Operational Source
 
@@ -194,8 +259,8 @@ pattern for a production database.
 Create a deterministic operational snapshot and then generate transactional changes:
 
 ```bash
-docker compose run --rm core-banking-workload snapshot --run-id demo-snapshot-v1
-docker compose run --rm core-banking-workload changes --run-id demo-changes-v1
+docker compose --profile tools run --rm core-banking-workload snapshot --run-id demo-snapshot-v1
+docker compose --profile tools run --rm core-banking-workload changes --run-id demo-changes-v1
 ```
 
 Each change scenario commits separately and records its expected and actual outcome
@@ -228,6 +293,20 @@ semantics, lag check, and replay procedure are documented in `cdc/bronze/README.
 Trigger the Airflow DAG `cdc_raw_vault_incremental` to validate Bronze, load Hubs and
 Links, load Satellite/delete history, and reconcile source, Bronze, and Silver in four
 visible tasks. The complete contract is documented in `cdc/DATA_VAULT_MAPPING.md`.
+
+## Oracle CDC Production Blueprint
+
+The repository does not run an Oracle database and does not claim to validate Oracle
+LogMiner. The selected production candidate is the Apache-licensed Debezium Oracle
+connector with the native LogMiner adapter. XStream and GoldenGate are not selected.
+The connector template deliberately contains unresolved placeholders and cannot be
+deployed until the bank completes Oracle license, DBA, source-owner, security, and
+network reviews.
+
+See `ORACLE_CDC_READINESS.md` for the licensing boundary, PostgreSQL-to-Oracle event
+mapping, snapshot-to-streaming procedure, DBA checklist, data-dictionary discovery,
+and production acceptance gates. The machine-readable contract is stored in
+`cdc/oracle-readiness.yaml`.
 
 ## Run the Pipeline
 
@@ -304,13 +383,118 @@ Run the fast local checks with a Python 3.11 virtual environment:
 ```bash
 python -m pip install -r requirements-dev.txt -r cdc/bronze/requirements.txt
 ruff check .
-python -m compileall -q cdc dags scripts source trino tests
+python -m compileall -q cdc dags observability scripts security source trino tests
 PYTHONPATH=cdc/bronze python -m unittest discover -s cdc/bronze -p 'test_*.py'
+python tests/test_observability_blueprint.py
+python tests/test_final_package.py
+bash -n operations/end_to_end_smoke_test.sh
+bash -n operations/reproducibility_test.sh
 docker compose config --quiet
 ```
 
 The workflow and its deterministic Trino Raw Vault fixture are documented in
 `ci/README.md`.
+
+## Reproducibility Acceptance
+
+`operations/reproducibility_test.sh` runs the complete acceptance path in an
+isolated `lakehouse-repro-*` Compose project with fresh volumes. It preserves the
+normal demo volumes and writes local evidence under the Git-ignored
+`tests/results/` directory. This is a reviewable local PoC acceptance test, not a
+production-readiness certification.
+
+## Optional Observability Baseline
+
+Start the local Prometheus, Grafana, Alertmanager, and pipeline exporter overlay:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.observability.yml \
+  --profile observability \
+  up -d --build
+```
+
+Open **Lakehouse > Lakehouse Pipeline Operations** at <http://localhost:3000>.
+The default local credentials are `admin` / `admin-local-only`; override them through
+`.env`. Prometheus is available at <http://localhost:9090> and the raw local metric
+endpoint at <http://localhost:9108/metrics>.
+
+The baseline evaluates connector status, Kafka consumer lag, latest Airflow and
+SparkSubmit task results, Trino query counters, reconciliation outcomes, and Gold
+freshness/grain. It is a single-node PoC, not an HA monitoring or production paging
+system. Operational response, provisional RPO/RTO assumptions, and the end-to-end
+test procedure are in `OPERATIONS_RUNBOOK.md`.
+
+## Optional Access-Control Proof of Concept
+
+The base stack remains unauthenticated for isolated local development. A separate
+Compose overlay enables Trino password authentication and deny-by-default file-based
+access control without changing the normal demo path:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.access-control.yml \
+  up -d --force-recreate trino
+
+.venv/bin/python security/verify_access_control.py
+```
+
+The integration check proves authentication failure, Gold-only analyst access,
+masked identifiers for the auditor, and a branch-level row filter. File-based access
+control is the executable local behavior PoC, not the production authorization target.
+The production target remains Apache Ranger 2.5+ with enterprise identity, TLS, a
+dedicated audit store, and SIEM forwarding. See `security/README.md` and
+`SECURITY_AND_ACCESS_CONTROL.md`.
+
+## Target Deployment and OPA Policies
+
+The production runtime candidates remain Kubernetes, OpenShift, or the institution's
+approved container platform. The repository defines component ownership, namespace
+segmentation, IAM mappings, secure reference manifests, and tested OPA admission
+policies without claiming that an enterprise cluster has been deployed.
+
+Run the policy tests locally:
+
+```bash
+docker run --rm \
+  --volume "$PWD/platform/policies:/policies:ro" \
+  openpolicyagent/opa:1.17.0-static \
+  test /policies --verbose --fail-on-empty
+
+.venv/bin/python tests/test_platform_blueprint.py
+```
+
+The policies reject unapproved registries, mutable images, root/privileged workloads,
+missing resources, plaintext secret values, default service accounts, missing seccomp
+controls, and hostPath volumes. See `platform/README.md` and
+`DEPLOYMENT_AND_POLICY_BLUEPRINT.md` for the rollout and ownership model.
+
+## Optional Governance Catalog
+
+OpenMetadata runs in a separate Compose profile so the normal CDC demo does not pay
+its CPU and memory cost. Start it only after the base stack and dbt Gold models are
+ready:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.openmetadata.yml \
+  --profile governance \
+  up -d \
+  openmetadata-postgresql \
+  openmetadata-elasticsearch \
+  openmetadata-migrate \
+  openmetadata-server
+```
+
+The external ingestion workflows catalog the synthetic PostgreSQL source, Trino
+Raw Vault and Gold schemas, and dbt artifacts. The local profile uses OpenMetadata's
+basic login and requires an ingestion-bot JWT; its default credentials and keys must
+not be exposed or treated as a production deployment.
+See `governance/README.md` for the ingestion sequence and
+`GOVERNANCE_AND_METADATA.md` for responsibility boundaries and the Metaworks decision.
 
 ## Expected Data Outputs
 
@@ -388,15 +572,21 @@ MinIO may not preview these files directly in the browser; that is expected.
 
 ## Clean Reproducible Reset
 
-To remove all containers and volumes, including Airflow metadata, synthetic source
-data, and MinIO data:
+Use the isolated acceptance script for a tested clean run:
 
 ```bash
-docker compose down -v
-docker compose up -d --build
+./operations/reproducibility_test.sh
 ```
 
-Use this when you want a fully clean demo run.
+It accepts only a generated `lakehouse-repro-*` Compose project, rejects existing
+containers or volumes with that name, runs the source-to-dashboard checks on fresh
+volumes, writes evidence under `tests/results/`, and removes only the isolated
+project after success. The normal demo stack must be stopped first if it occupies
+the same host ports; stopping it does not delete its volumes.
+
+`docker compose down -v` is destructive: it permanently removes the local
+Airflow, source, Kafka, MinIO, metastore, and governance state. Use it only when
+that data loss is intentional, then follow the source-first Quick Start sequence.
 
 If you only want to clear the lakehouse bucket while keeping containers running:
 

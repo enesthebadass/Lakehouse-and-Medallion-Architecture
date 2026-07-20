@@ -1,0 +1,130 @@
+version: 1
+system_of_record:
+  local_reference: OpenMetadata
+  enterprise_decision: pending_metaworks_capability_assessment
+  conflict_rule: never_edit_the_same_governance_attribute_in_two_systems
+
+domains:
+  - name: Customer
+    display_name: Customer Domain
+    description: Customer master, contact, relationship, and customer-facing analytical assets.
+    domain_type: Source-aligned
+    owner_role: Customer Data Owner
+    steward_role: Customer Data Steward
+    source_schemas: [mms]
+  - name: Lending
+    display_name: Lending Domain
+    description: Loan application, contract, installment, collateral, and lending analytics assets.
+    domain_type: Source-aligned
+    owner_role: Lending Data Owner
+    steward_role: Lending Data Steward
+    source_schemas: [krd]
+  - name: ReferenceData
+    display_name: Reference Data Domain
+    description: Shared controlled parameters and reference codes used across banking domains.
+    domain_type: Aggregate
+    owner_role: Enterprise Data Owner
+    steward_role: Reference Data Steward
+    source_schemas: [prm]
+
+data_products:
+  - name: Customer360
+    domain: Customer
+    description: Governed current-state customer dimension without raw direct identifiers.
+    output_assets:
+      - lakehouse_trino.lakehouse.gold_dbt.dim_customer_current
+  - name: LoanPortfolio
+    domain: Lending
+    description: Governed current-state lending facts and currency-safe portfolio aggregates.
+    output_assets:
+      - lakehouse_trino.lakehouse.gold_dbt.fct_loans_current
+      - lakehouse_trino.lakehouse.gold_dbt.agg_customer_loan_portfolio
+
+classifications:
+  - name: SourceDomain
+    description: Synthetic source module boundary; not a claim about the real bank schemas.
+    tags:
+      - {name: MMS, description: Synthetic customer-oriented source schema}
+      - {name: KRD, description: Synthetic lending-oriented source schema}
+      - {name: PRM, description: Synthetic reference and parameter source schema}
+  - name: DataSensitivity
+    description: Business impact classification used as input to access policies.
+    tags:
+      - {name: Public, description: Approved for public disclosure}
+      - {name: Internal, description: Internal operational metadata}
+      - {name: Confidential, description: Business-confidential information}
+      - {name: Restricted, description: Highest-control sensitive information}
+  - name: PersonalData
+    description: Personal-data taxonomy; tags describe data, they do not enforce access.
+    tags:
+      - {name: DirectIdentifier, description: Directly identifies a person}
+      - {name: SensitiveIdentifier, description: Government or tax identifier}
+      - {name: Contact, description: Address, phone, or email data}
+      - {name: QuasiIdentifier, description: May identify a person when combined}
+  - name: FinancialData
+    description: Banking and lending financial information.
+    tags:
+      - {name: MonetaryAmount, description: Currency-denominated amount}
+      - {name: CreditExposure, description: Credit application, loan, or collateral information}
+
+asset_tags:
+  - entity: synthetic_core_banking.core_banking.mms.customers
+    tags: [SourceDomain.MMS, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.mms.customer_addresses
+    tags: [SourceDomain.MMS, PersonalData.Contact, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.mms.customer_contacts
+    tags: [SourceDomain.MMS, PersonalData.Contact, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.mms.customer_relations
+    tags: [SourceDomain.MMS, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.mms.customers.national_id
+    tags: [PersonalData.SensitiveIdentifier, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.mms.customers.tax_id
+    tags: [PersonalData.SensitiveIdentifier, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.mms.customers.date_of_birth
+    tags: [PersonalData.QuasiIdentifier, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.mms.customer_addresses.address_line
+    tags: [PersonalData.Contact, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.mms.customer_contacts.contact_value
+    tags: [PersonalData.Contact, DataSensitivity.Restricted]
+  - entity: synthetic_core_banking.core_banking.krd.loan_applications
+    tags: [SourceDomain.KRD, FinancialData.CreditExposure, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.krd.loans
+    tags: [SourceDomain.KRD, FinancialData.CreditExposure, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.krd.installments
+    tags: [SourceDomain.KRD, FinancialData.CreditExposure, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.krd.collaterals
+    tags: [SourceDomain.KRD, FinancialData.CreditExposure, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.krd.loans.principal_amount
+    tags: [FinancialData.MonetaryAmount, DataSensitivity.Confidential]
+  - entity: synthetic_core_banking.core_banking.prm.products
+    tags: [SourceDomain.PRM, DataSensitivity.Internal]
+  - entity: synthetic_core_banking.core_banking.prm.currencies
+    tags: [SourceDomain.PRM, DataSensitivity.Internal]
+  - entity: synthetic_core_banking.core_banking.prm.branches
+    tags: [SourceDomain.PRM, DataSensitivity.Internal]
+  - entity: synthetic_core_banking.core_banking.prm.status_codes
+    tags: [SourceDomain.PRM, DataSensitivity.Internal]
+  - entity: synthetic_core_banking.core_banking.prm.rate_parameters
+    tags: [SourceDomain.PRM, FinancialData.CreditExposure, DataSensitivity.Confidential]
+  - entity: lakehouse_trino.lakehouse.gold_dbt.dim_customer_current
+    tags: [DataSensitivity.Internal]
+  - entity: lakehouse_trino.lakehouse.gold_dbt.fct_loans_current
+    tags: [FinancialData.CreditExposure, DataSensitivity.Confidential]
+  - entity: lakehouse_trino.lakehouse.gold_dbt.agg_customer_loan_portfolio
+    tags: [FinancialData.CreditExposure, DataSensitivity.Confidential]
+
+glossary:
+  name: BankingBusinessGlossary
+  terms:
+    - name: Customer
+      description: A synthetic individual or corporate party represented by a stable customer number.
+      steward_role: Customer Data Steward
+    - name: LoanApplication
+      description: A request for a lending product before approval or rejection.
+      steward_role: Lending Data Steward
+    - name: ActiveLoan
+      description: A disbursed loan whose current status is ACTIVE.
+      steward_role: Lending Data Steward
+    - name: PrincipalExposure
+      description: Outstanding or originated principal grouped by currency without cross-currency summation.
+      steward_role: Lending Data Steward

@@ -1,0 +1,119 @@
+version: 1
+status:
+  local_file_policy: implemented_poc
+  apache_ranger: designed_external
+  enterprise_identity: external
+
+principles:
+  default_decision: deny
+  authentication_required: true
+  service_accounts_are_non_human: true
+  metadata_tags_do_not_enforce_access_by_themselves: true
+
+roles:
+  - name: platform_admin
+    local_user: lakehouse-admin
+    bronze: none
+    silver: admin
+    gold: admin
+    audit: admin
+  - name: data_engineer
+    local_user: data-engineer
+    bronze: read_write
+    silver: read_write
+    gold: read_write
+    audit: read
+  - name: transformation_service
+    local_user: dbt-local
+    bronze: none
+    silver: read
+    gold: read_write
+    audit: none
+  - name: metadata_service
+    local_user: openmetadata-ingestion
+    bronze: none
+    silver: read_for_metadata_ingestion
+    gold: read_for_metadata_ingestion
+    audit: none
+  - name: analyst
+    local_user: analyst
+    bronze: none
+    silver: none
+    gold: read
+    audit: none
+  - name: branch_analyst
+    local_user: branch-analyst
+    bronze: none
+    silver: none
+    gold: filtered_read
+    audit: none
+  - name: auditor
+    local_user: auditor
+    bronze: read
+    silver: masked_read
+    gold: read
+    audit: read
+  - name: bi_service
+    local_user: bi-service
+    bronze: none
+    silver: none
+    gold: read
+    audit: none
+
+classification_policy_mapping:
+  - classification: PersonalData.SensitiveIdentifier
+    action: mask
+    exceptions: [platform_admin, data_engineer]
+  - classification: PersonalData.DirectIdentifier
+    action: mask
+    exceptions: [platform_admin, data_engineer]
+  - classification: PersonalData.Contact
+    action: mask
+    exceptions: [platform_admin, data_engineer]
+  - classification: DataSensitivity.Restricted
+    action: deny_unless_explicitly_approved
+    exceptions: [platform_admin, data_engineer, auditor]
+  - classification: FinancialData.CreditExposure
+    action: domain_read_only
+    exceptions: [platform_admin, data_engineer, transformation_service]
+
+column_masks:
+  - table: lakehouse.cdc_raw_vault.sat_customer_details
+    columns: [national_id, tax_id]
+    strategy: keep_last_4
+    applies_to: [auditor]
+  - table: lakehouse.cdc_raw_vault.sat_customer_details
+    columns: [first_name, last_name]
+    strategy: keep_first_character
+    applies_to: [auditor]
+  - table: lakehouse.cdc_raw_vault.sat_customer_details
+    columns: [date_of_birth]
+    strategy: year_only
+    applies_to: [auditor]
+
+row_filters:
+  - role: branch_analyst
+    table: lakehouse.gold_dbt.dim_customer_current
+    expression: home_branch_code = 'BR001'
+  - role: branch_analyst
+    table: lakehouse.gold_dbt.fct_loans_current
+    expression: branch_code = 'BR001'
+
+audit_expectations:
+  decision_events: [allowed, denied, masked, row_filtered]
+  required_fields:
+    - event_time
+    - query_id
+    - user
+    - groups
+    - client_address
+    - catalog
+    - schema
+    - table
+    - columns
+    - access_type
+    - policy_id
+    - decision
+  destination: dedicated_ranger_audit_store
+  retention: institution_policy_required
+  siem_forwarding: required

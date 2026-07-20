@@ -1,6 +1,15 @@
-# Local instructions and generated presentation notes
+# Local instructions, learning, planning, and presentation notes
 talimatlar.md
 DEMO_REHBERI.md
+KISA_DEMO_AKIS_REHBERI.md
+20_DAY_ROADMAP.md
+PRODUCTION_GAP_ANALYSIS.md
+TARGET_ARCHITECTURE.md
+DATAVAULT_2_0_REHBERI.md
+MIMARI_TOOL_VE_KAVRAM_REHBERI.md
+FINAL_DEMO_GUIDE.md
+FINAL_POC_READINESS.md
+okuma_sırası.txt
 
 # Local environment files
 .env
@@ -35,6 +44,7 @@ dbt/logs/
 exports/
 data/
 tmp/
+tests/results/
 *.tmp
 
 # OS/editor files
@@ -42,10 +52,3 @@ tmp/
 Thumbs.db
 .idea/
 .vscode/
-
-KISA_DEMO_AKIS_REHBERI.md
-20_DAY_ROADMAP.md
-PRODUCTION_GAP_ANALYSIS.md
-TARGET_ARCHITECTURE.md
-DATAVAULT_2_0_REHBERI.md
-MIMARI_TOOL_VE_KAVRAM_REHBERI.md

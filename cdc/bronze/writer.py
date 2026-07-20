@@ -23,7 +23,8 @@ from confluent_kafka.admin import AdminClient
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_CONSUMER_GROUP = os.getenv("KAFKA_CONSUMER_GROUP", "bronze-cdc-writer-v1")
 KAFKA_TOPIC_PATTERN = os.getenv(
-    "KAFKA_TOPIC_PATTERN", r"^bank\.core\.(mms|krd|prm)\..+$"
+    "KAFKA_TOPIC_PATTERN",
+    r"^bank\.core\.(mms|MMS|krd|KRD|prm|PRM)\..+$",
 )
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
 S3_BUCKET = os.getenv("S3_BUCKET", "lakehouse")
@@ -100,7 +101,7 @@ def topic_source(topic: str) -> tuple[str, str]:
     parts = topic.split(".")
     if len(parts) < 4:
         raise ValueError(f"Cannot derive schema and table from topic {topic!r}")
-    return parts[-2], parts[-1]
+    return parts[-2].lower(), parts[-1].lower()
 
 
 def event_datetime(value: Any, kafka_timestamp_ms: int | None) -> datetime:
@@ -150,6 +151,8 @@ def build_record(message: Message, ingested_at: datetime | None = None) -> Bronz
             raise ValueError(
                 "Debezium schema, table and operation must be non-empty strings"
             )
+        source_schema = source_schema.lower()
+        source_table = source_table.lower()
 
     source_schema = safe_path_component(source_schema, "source schema")
     source_table = safe_path_component(source_table, "source table")
@@ -264,6 +267,7 @@ class BronzeWriter:
                 "enable.auto.offset.store": False,
                 "auto.offset.reset": "earliest",
                 "client.id": "bronze-cdc-writer",
+                "topic.metadata.refresh.interval.ms": 10000,
             }
         )
 

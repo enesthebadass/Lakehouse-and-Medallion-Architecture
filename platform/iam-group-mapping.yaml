@@ -1,0 +1,56 @@
+version: 1
+source_of_identity: enterprise_iam
+directory_protocol: ldap_or_active_directory
+provisioning: institution_joiner_mover_leaver_process
+
+group_mappings:
+  - enterprise_group: BANK-DATA-PLATFORM-ADMINS
+    kubernetes_binding: lakehouse-platform-admin
+    ranger_role: platform_admin
+    openmetadata_team: DataPlatform
+  - enterprise_group: BANK-DATA-ENGINEERS
+    kubernetes_binding: lakehouse-data-engineer
+    ranger_role: data_engineer
+    openmetadata_team: DataEngineering
+  - enterprise_group: BANK-DATA-ANALYSTS
+    kubernetes_binding: none
+    ranger_role: analyst
+    openmetadata_team: Analysts
+  - enterprise_group: BANK-DATA-AUDITORS
+    kubernetes_binding: none
+    ranger_role: auditor
+    openmetadata_team: DataAudit
+  - enterprise_group: BANK-DATA-GOVERNANCE
+    kubernetes_binding: lakehouse-governance-steward
+    ranger_role: none
+    openmetadata_team: DataGovernance
+
+service_accounts:
+  - name: airflow-scheduler
+    namespace: lakehouse-orchestration
+    workload_identity: required
+    interactive_login: forbidden
+  - name: spark-runner
+    namespace: lakehouse-processing
+    workload_identity: required
+    interactive_login: forbidden
+  - name: dbt-runner
+    namespace: lakehouse-processing
+    workload_identity: required
+    interactive_login: forbidden
+  - name: openmetadata-ingestion
+    namespace: lakehouse-governance
+    workload_identity: required
+    interactive_login: forbidden
+  - name: trino
+    namespace: lakehouse-serving
+    workload_identity: required
+    interactive_login: forbidden
+
+rules:
+  direct_user_role_binding: forbidden
+  default_service_account: forbidden
+  cluster_admin_for_application_teams: forbidden
+  namespace_role_binding_preferred: true
+  quarterly_access_review: required
+  break_glass_account: externally_controlled

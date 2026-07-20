@@ -1,0 +1,33 @@
+source:
+  type: trino
+  serviceName: lakehouse_trino
+  serviceConnection:
+    config:
+      type: Trino
+      hostPort: trino:8080
+      username: openmetadata-ingestion
+      catalog: lakehouse
+  sourceConfig:
+    config:
+      type: DatabaseMetadata
+      schemaFilterPattern:
+        includes:
+          - ^cdc_raw_vault$
+          - ^gold_dbt$
+      includeTables: true
+      includeViews: true
+      includeOwners: false
+      includeTags: false
+      markDeletedTables: true
+      useFqnForFiltering: false
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  loggerLevel: INFO
+  openMetadataServerConfig:
+    hostPort: http://openmetadata-server:8585/api
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OPENMETADATA_JWT_TOKEN}
+    storeServiceConnection: true
