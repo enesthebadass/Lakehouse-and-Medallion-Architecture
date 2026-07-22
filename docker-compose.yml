@@ -19,15 +19,25 @@ x-airflow-common: &airflow-common
     S3_BUCKET: lakehouse
     SPARK_MASTER_URL: spark://spark-master:7077
     AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077
+    PIPELINE_CONTROL_DSN: postgresql://pipeline_control:pipeline_control_local@pipeline-control-postgres:5432/pipeline_control
+    SOURCE_CONTROL_DSN: postgresql://core_banking:core_banking_local@core-banking-source:5432/core_banking
+    PIPELINE_MANIFEST_PREFIX: bronze/_control/manifests
+    BRONZE_CONTROL_SOURCE_PREFIX: bronze/cdc/source=core_banking
+    CDC_SOURCE_ADAPTER: postgres-debezium
+    CDC_SCHEMA_CONTRACT_VERSION: cdc-envelope-v1
+    PYTHONPATH: /opt/airflow
   volumes:
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./plugins:/opt/airflow/plugins
+    - ./pipeline_control:/opt/airflow/pipeline_control:ro
   user: "${AIRFLOW_UID:-50000}:0"
   networks:
     - lakehouse
   depends_on:
     postgres:
+      condition: service_healthy
+    pipeline-control-postgres:
       condition: service_healthy
     minio:
       condition: service_healthy
@@ -48,6 +58,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+  pipeline-control-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${PIPELINE_CONTROL_DB_USER:-pipeline_control}
+      POSTGRES_PASSWORD: ${PIPELINE_CONTROL_DB_PASSWORD:-pipeline_control_local}
+      POSTGRES_DB: ${PIPELINE_CONTROL_DB_NAME:-pipeline_control}
+    ports:
+      - "${PIPELINE_CONTROL_DB_PORT:-5434}:5432"
+    volumes:
+      - pipeline-control-db-volume:/var/lib/postgresql/data
+      - ./pipeline_control/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
     networks:
       - lakehouse
@@ -304,6 +338,8 @@ services:
         condition: service_healthy
       hive-metastore:
         condition: service_healthy
+      pipeline-control-postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]
       interval: 10s
@@ -452,6 +488,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pipeline-control-postgres:
+        condition: service_healthy
       minio-init:
         condition: service_completed_successfully
       spark-master:
@@ -487,6 +525,7 @@ services:
 
 volumes:
   postgres-db-volume:
+  pipeline-control-db-volume:
   core-banking-db-volume:
   kafka-data:
   minio-data:

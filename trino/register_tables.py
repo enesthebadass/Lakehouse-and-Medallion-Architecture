@@ -55,6 +55,9 @@ def registrations() -> tuple[TableRegistration, ...]:
         "sat_branch_details",
         "sat_currency_details",
         "sat_source_record_status",
+        "sat_entity_record_status",
+        "sat_application_context_effectivity",
+        "sat_loan_context_effectivity",
     )
     gold_tables = (
         "dim_customer",

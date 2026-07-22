@@ -36,7 +36,7 @@ jobs:
         run: ruff check .
 
       - name: Compile Python
-        run: python -m compileall -q cdc dags observability scripts security source trino tests
+        run: python -m compileall -q cdc dags observability operations scripts security source trino tests
 
       - name: Run Bronze writer unit tests
         env:
@@ -60,6 +60,21 @@ jobs:
 
       - name: Validate final PoC package
         run: python tests/test_final_package.py
+
+      - name: Validate Phase 0 invariant contract and baseline collector
+        run: python tests/test_phase0_baseline.py
+
+      - name: Validate Phase 1 manifest and control plane
+        run: python tests/test_phase1_control_plane.py
+
+      - name: Validate Phase 2 bounded incremental loading
+        run: python tests/test_phase2_bounded_incremental.py
+
+      - name: Validate Phase 3 point-in-time reconciliation
+        run: python tests/test_phase3_point_in_time_audit.py
+
+      - name: Validate Phase 4 delete and effectivity correctness
+        run: python tests/test_phase4_current_state.py
 
       - name: Validate shell scripts
         run: |

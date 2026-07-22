@@ -7,6 +7,7 @@ with ranked_product_details as (
         is_active,
         updated_at,
         effective_from,
+        load_datetime,
         source_lsn,
         kafka_partition,
         kafka_offset,
@@ -30,8 +31,12 @@ select
     coalesce(try_cast(details.is_active as boolean), false) as is_active,
     {{ cdc_timestamp('details.updated_at') }} as source_updated_at,
     details.effective_from as source_effective_from,
+    details.load_datetime as source_load_datetime,
     current_timestamp as dbt_loaded_at
 from {{ source('cdc_raw_vault', 'hub_product') }} as hub
+inner join {{ ref('int_current_entity_status') }} as entity_status
+    on hub.product_hk = entity_status.entity_hk
+    and entity_status.entity_type = 'PRODUCT'
 inner join ranked_product_details as details
     on hub.product_hk = details.product_hk
     and details.detail_rank = 1

@@ -1,0 +1,316 @@
+schema_version: 1
+title: Lakehouse correctness invariant contract
+purpose: >-
+  Define the guarantees that must remain true across retries, replay, failures,
+  schema changes, and production adapter integrations.
+
+status_values:
+  - implemented_poc
+  - partially_implemented
+  - planned
+  - external
+
+severity_values:
+  - critical
+  - high
+  - medium
+
+required_technical_fields:
+  event:
+    - event_id
+    - source_system
+    - source_schema
+    - source_table
+    - operation
+    - kafka_topic
+    - kafka_partition
+    - kafka_offset
+    - payload_sha256
+  batch:
+    - batch_id
+    - manifest_uri
+    - watermark_low
+    - watermark_high
+    - schema_contract_version
+    - attempt_number
+  vault:
+    - load_datetime
+    - effective_from
+    - record_source
+    - load_batch_id
+    - source_event_id
+    - source_position
+
+technical_field_semantics:
+  event_id: >-
+    Lowercase hexadecimal SHA-256 of the UTF-8 Kafka coordinate
+    "{topic}:{partition}:{offset}". It is stable across consumer retries.
+  source_system: Stable logical source adapter name; local PoC value is core_banking.
+  source_schema: Lowercase source-owner/schema name such as mms, krd, or prm.
+  source_table: Lowercase source table name inside source_schema.
+  operation: Canonical CDC operation; Debezium r/c/u/d values mean read, create,
+    update, and delete.
+  kafka_topic: Exact Kafka topic that carried the source event.
+  kafka_partition: Zero-based Kafka partition number.
+  kafka_offset: Kafka partition-local offset; topic, partition, and offset are unique.
+  payload_sha256: >-
+    Lowercase hexadecimal SHA-256 of raw key bytes, one NUL separator byte, and raw
+    value bytes before JSON normalization.
+  batch_id: >-
+    Stable logical processing-run identifier. In the current PoC it is the Airflow
+    DAG run ID; from phase 1 it identifies one immutable manifest across attempts.
+  manifest_uri: Immutable object-storage URI of the batch offset manifest.
+  watermark_low: >-
+    Per-topic/partition offset already completed before this batch; the lower bound
+    is exclusive.
+  watermark_high: >-
+    Per-topic/partition maximum offset captured when the manifest is sealed; the
+    upper bound is inclusive. A batch processes (watermark_low, watermark_high].
+  schema_contract_version: Version of the canonical CDC envelope and field rules.
+  attempt_number: One-based execution attempt for a batch; retry increments it.
+  load_datetime: >-
+    UTC Bronze ingestion timestamp retained unchanged in Raw Vault across retries.
+  effective_from: Source business/event timestamp used to order history.
+  record_source: Dot-separated logical origin source_system.source_schema.source_table.
+  load_batch_id: batch_id that first made the Raw Vault row durable.
+  source_event_id: Raw Vault copy of event_id.
+  source_position: Canonical downstream coordinate "kafka_topic:kafka_partition:kafka_offset".
+
+invariants:
+  - id: bronze.coordinate_identity_is_stable
+    phase: 0
+    status: implemented_poc
+    severity: critical
+    owner: ingestion
+    scope: kafka_to_bronze
+    statement: >-
+      A Kafka topic, partition, and offset always resolves to the same event ID and
+      deterministic Bronze object key.
+    evidence:
+      automated_test: cdc/bronze/test_writer.py
+      baseline_check: bronze_inventory_non_empty
+
+  - id: bronze.replay_is_idempotent
+    phase: 0
+    status: implemented_poc
+    severity: critical
+    owner: ingestion
+    scope: bronze
+    statement: >-
+      Replaying an already persisted Kafka coordinate does not create another Bronze
+      object and a conflicting payload fails closed.
+    evidence:
+      automated_test: cdc/bronze/test_writer.py
+      historical_result: tests/results/day20-clean-e2e.md
+
+  - id: batch.input_boundary_is_immutable
+    phase: 1
+    status: implemented_poc
+    severity: critical
+    owner: orchestration
+    scope: bronze_to_raw_vault
+    statement: >-
+      Every task in one Raw Vault batch processes the same immutable topic and
+      partition low/high offset manifest.
+    evidence:
+      implemented_artifact: bronze/_control/manifests/{batch_id}.json
+      automated_test: tests/test_phase1_control_plane.py
+      historical_result: tests/results/phase1-final-evidence.json
+
+  - id: batch.retry_preserves_result
+    phase: 1
+    status: implemented_poc
+    severity: critical
+    owner: data_engineering
+    scope: raw_vault
+    statement: >-
+      Retrying the same batch and manifest does not change business row counts or
+      deterministic table fingerprints.
+    evidence:
+      automated_test: scripts/audit_cdc_raw_vault.py
+      control_test: tests/test_phase1_control_plane.py
+      historical_result: tests/results/phase1-replay-after.json
+
+  - id: batch.attempt_history_is_preserved
+    phase: 1
+    status: implemented_poc
+    severity: high
+    owner: orchestration
+    scope: control_plane
+    statement: >-
+      Every initial run, retry, and replay has a separate attempt record while task
+      evidence retains the immutable manifest checksum used by that attempt.
+    evidence:
+      automated_test: tests/test_phase1_control_plane.py
+      baseline_check: pipeline_control_latest_attempt_is_published
+
+  - id: incremental.work_is_bounded_by_new_events
+    phase: 2
+    status: implemented_poc
+    severity: high
+    owner: data_engineering
+    scope: bronze_to_raw_vault
+    statement: >-
+      Normal incremental work is proportional to the selected event range rather
+      than the complete Bronze history.
+    evidence:
+      automated_test: tests/test_phase2_bounded_incremental.py
+      baseline_check: pipeline_control_bounded_input_evidence_is_consistent
+      historical_result: tests/results/phase2-replay-after.json
+
+  - id: raw_vault.keys_are_insert_only
+    phase: 2
+    status: implemented_poc
+    severity: critical
+    owner: data_engineering
+    scope: raw_vault
+    statement: >-
+      Existing Hub and Link identities are not updated or duplicated during normal
+      CDC loading.
+    evidence:
+      automated_test: scripts/audit_cdc_raw_vault.py
+      historical_result: tests/results/day20-clean-e2e.md
+
+  - id: satellite.only_records_changes
+    phase: 2
+    status: implemented_poc
+    severity: critical
+    owner: data_engineering
+    scope: raw_vault
+    statement: >-
+      A Satellite appends a row only for a new source event that changes the payload
+      state, including comparison with the persisted state from the previous batch.
+    evidence:
+      automated_test: tests/test_phase2_bounded_incremental.py
+      historical_result: tests/results/phase2-replay-after.json
+
+  - id: reconciliation.uses_one_source_boundary
+    phase: 3
+    status: implemented_poc
+    severity: critical
+    owner: data_quality
+    scope: source_to_raw_vault
+    statement: >-
+      Source, Kafka, Bronze, accepted, quarantine, and Raw Vault controls refer to the
+      same LSN, SCN, and Kafka offset boundary.
+    evidence:
+      automated_test: tests/test_phase3_point_in_time_audit.py
+      baseline_check: pipeline_control_point_in_time_audit_passes
+      historical_result: tests/results/phase3-final-evidence.json
+
+  - id: reconciliation.conserves_events
+    phase: 3
+    status: implemented_poc
+    severity: critical
+    owner: data_quality
+    scope: bronze_to_raw_vault
+    statement: >-
+      Every event in a batch is accounted for as accepted, quarantined, duplicate, or
+      superseded, with no unexplained loss.
+    evidence:
+      baseline_check: latest_reconciliation_passes
+      automated_test: tests/test_phase3_point_in_time_audit.py
+      implemented: source_manifest_accepted_quarantine_and_target_effect_conservation
+
+  - id: gold.current_excludes_deleted_entities
+    phase: 4
+    status: implemented_poc
+    severity: critical
+    owner: analytics_engineering
+    scope: gold
+    statement: >-
+      A deleted source entity remains in Raw Vault history but is absent from every
+      current Gold model unless a documented business rule says otherwise.
+    evidence:
+      automated_test: dbt/tests/assert_deleted_entities_absent_from_current_gold.sql
+      control_test: tests/test_phase4_current_state.py
+      historical_result: tests/results/phase4-final-evidence.json
+
+  - id: gold.current_uses_latest_effective_context
+    phase: 4
+    status: implemented_poc
+    severity: critical
+    owner: analytics_engineering
+    scope: gold
+    statement: >-
+      Every current fact uses the latest source-ordered active relationship context,
+      while repeated A to B to A transitions remain present in Raw Vault history.
+    evidence:
+      automated_test: dbt/tests/assert_gold_uses_current_effective_context.sql
+      control_test: tests/test_phase4_current_state.py
+      historical_result: tests/results/phase4-final-evidence.json
+
+  - id: gold.current_grain_is_unique
+    phase: 0
+    status: implemented_poc
+    severity: critical
+    owner: analytics_engineering
+    scope: gold
+    statement: Every current fact and dimension has exactly one row per declared grain.
+    evidence:
+      baseline_check: gold_current_grains_are_unique
+      automated_test: dbt/models/gold/_gold_models.yml
+
+  - id: gold.publish_is_atomic
+    phase: 7
+    status: planned
+    severity: critical
+    owner: analytics_engineering
+    scope: gold_publish
+    statement: >-
+      A failed build or test never replaces the last approved Gold release and a
+      successful release can be rolled back.
+    evidence:
+      planned_test: failed_dbt_build_preserves_stable_release
+
+  - id: schema.incompatible_event_is_isolated
+    phase: 5
+    status: planned
+    severity: critical
+    owner: ingestion
+    scope: canonical_staging
+    statement: >-
+      An incompatible or malformed event is retained in a raw error lane and cannot
+      stop unrelated valid events from being ingested.
+    evidence:
+      planned_test: poison_event_dlq_and_replay
+
+  - id: lineage.source_to_release_is_complete
+    phase: 3
+    status: partially_implemented
+    severity: high
+    owner: governance
+    scope: end_to_end
+    statement: >-
+      A Gold row and release can be traced to batch, attempt, manifest, source event,
+      and transformation version.
+    evidence:
+      dbt_model: dbt/models/gold/gold_row_lineage.sql
+      baseline_check: pipeline_control_point_in_time_audit_passes
+      missing: release_and_transformation_version_binding
+
+  - id: storage.growth_is_measured_and_bounded
+    phase: 9
+    status: planned
+    severity: high
+    owner: platform
+    scope: bronze_silver_gold
+    statement: >-
+      Object count, physical bytes, small-file ratio, and storage amplification are
+      measured and remain within an approved capacity budget.
+    evidence:
+      baseline_check: storage_inventory_is_recorded
+      planned_test: fixed_delta_history_scaling
+
+  - id: release.evidence_is_reproducible
+    phase: 10
+    status: partially_implemented
+    severity: high
+    owner: platform
+    scope: release
+    statement: >-
+      A release identifies the source commit, image digests, schema and dbt versions,
+      tests, benchmark, and audit evidence required to reproduce it.
+    evidence:
+      historical_result: tests/results/day20-reproducibility.md
+      missing: image_digest_and_benchmark_manifest

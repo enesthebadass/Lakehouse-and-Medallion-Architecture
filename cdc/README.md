@@ -99,6 +99,14 @@ The downstream Raw Vault business-key, hash, Hub, Link, Satellite, delete, quara
 and reconciliation contract is documented in
 [`DATA_VAULT_MAPPING.md`](DATA_VAULT_MAPPING.md).
 
+The Raw Vault DAG seals a topic/partition low-high manifest before Spark starts. A
+dedicated PostgreSQL control plane stores attempts and task checksum evidence, while
+Trino exposes that history through the `pipeline_control` catalog. Manifest v3 lists
+the exact low-high object keys and byte sizes plus frozen source transactions, LSN
+boundary, and event totals. Spark reads only those paths and skips zero-object batches
+before session creation. Legacy v1/v2 manifests remain replayable. See
+[`../pipeline_control/README.md`](../pipeline_control/README.md).
+
 ## Oracle Production Adapter Boundary
 
 The PostgreSQL connector proves the local CDC and downstream idempotency pattern; it

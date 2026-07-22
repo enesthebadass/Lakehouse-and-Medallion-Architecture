@@ -95,3 +95,30 @@ sources:
         description: Historized currency attributes.
       - name: sat_source_record_status
         description: Source-record active and deleted status history.
+      - name: sat_entity_record_status
+        description: Hub-attached active and deleted history for current-state filtering.
+        columns:
+          - name: source_event_id
+            data_tests: [not_null, unique]
+          - name: entity_hk
+            data_tests: [not_null]
+          - name: record_status
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: ["ACTIVE", "DELETED"]
+      - name: sat_application_context_effectivity
+        description: Historized current relationship context for each loan application.
+        columns:
+          - name: source_event_id
+            data_tests: [not_null, unique]
+          - name: loan_application_hk
+            data_tests: [not_null]
+      - name: sat_loan_context_effectivity
+        description: Historized current relationship context for each loan.
+        columns:
+          - name: source_event_id
+            data_tests: [not_null, unique]
+          - name: loan_hk
+            data_tests: [not_null]

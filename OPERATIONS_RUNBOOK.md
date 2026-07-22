@@ -134,6 +134,11 @@ task yeniden çalıştırılır. `validate` veya `reconcile` başarısızsa down
 devam ettirilmez. Spark OOM durumunda input hacmi, partition sayısı ve en büyük
 transaction ölçülmeden yalnız memory artırılmaz.
 
+Bugünkü PoC'de Gold/dbt adımı Raw Vault DAG'inin otomatik downstream task'ı değildir;
+bu kapı `end_to_end_smoke_test.sh` ve operatör prosedürüyle uygulanır. Ortak batch
+manifest'i ve ayrı atomik `gold_mart_publish` Airflow akışı production-shaped PoC
+hardening planındadır.
+
 ### Trino Query Failure
 
 ```bash
@@ -228,8 +233,121 @@ source -> Debezium -> Kafka -> immutable Bronze -> CDC Raw Vault
 Bu test Power BI Report Server'daki gerçek `.pbix`, ODBC driver veya scheduled refresh'i
 doğrulamaz; o adımlar şirket ortamında external kabul testidir.
 
+### Faz 0 Baseline ve No-op Karşılaştırması
+
+Çekirdek hardening değişikliklerinden önce source/Kafka/storage/Raw Vault/Gold
+ölçümlerini ve deterministic fingerprint'leri kaydet:
+
+```bash
+python operations/collect_phase0_baseline.py \
+  --output tests/results/phase0-baseline.json
+```
+
+Aynı batch veya no-op retry çalıştırıldıktan sonra karşılaştır:
+
+```bash
+python operations/collect_phase0_baseline.py \
+  --compare-to tests/results/phase0-baseline.json \
+  --output tests/results/phase0-after-noop.json
+```
+
+Collector mandatory check veya stable business fingerprint farkında non-zero döner.
+`--allow-failed-checks` yalnız arıza incelemesinde kanıt dosyasını almak içindir; kalite
+kapısını geçmek için kullanılmaz. Invariant durumları ve kanıt sahipliği
+`quality/correctness-invariants.yaml` içindedir.
+
+### Faz 1 Batch Manifest ve Control Plane
+
+Normal Raw Vault çalışması manifest'i DAG içinde üretir:
+
+```bash
+docker compose exec airflow-webserver airflow dags trigger \
+  --run-id cdc-example-001 cdc_raw_vault_incremental
+```
+
+Batch ve attempt geçmişini Trino'dan incele:
+
+```sql
+SELECT *
+FROM pipeline_control.public.v_pipeline_batch_history
+ORDER BY created_at DESC;
+
+SELECT batch_id, attempt_number, airflow_run_id, state, manifest_sha256
+FROM pipeline_control.public.pipeline_attempt
+ORDER BY started_at DESC;
+
+SELECT batch_id, attempt_number, count(*) AS task_count,
+       count(DISTINCT manifest_sha256) AS manifest_count
+FROM pipeline_control.public.pipeline_task_evidence
+GROUP BY 1, 2;
+```
+
+Son published batch kontrollü replay edilebilir:
+
+```bash
+docker compose exec airflow-webserver airflow dags trigger \
+  --run-id cdc-example-001-replay \
+  --conf '{"batch_id":"cdc-example-001"}' \
+  cdc_raw_vault_incremental
+```
+
+Replay sırasında batch `PUBLISHED` kalır ve yeni manifest oluşturulamaz. Eski bir
+published batch, daha yeni batch oluştuktan sonra replay edilemez. `CREATED` veya
+`FAILED` batch bilinçli iptal edilecekse `pipeline_control.control.supersede_batch`
+operatör prosedürü ve gerekçe ile çağrılmalıdır; doğrudan tablo güncellenmez.
+
+Manifest MinIO'da `bronze/_control/manifests/` altındadır. Object bytes ile
+`manifest_sha256` uyuşmazsa Spark task başlamadan fail eder. Lokal control DB kaybı
+production restore garantisi değildir; production'da HA, backup/PITR, TLS, secret
+rotation ve retention ayrıca kabul edilmelidir.
+
+Manifest v2 `bounded_object_list` modunda exact object key, ETag ve size tutar. Seçilen
+girdi maliyeti task bazında şöyle sorgulanır:
+
+```sql
+SELECT batch_id, attempt_number, task_id, reader_mode,
+       selected_input_object_count, selected_input_bytes
+FROM pipeline_control.public.pipeline_task_evidence
+ORDER BY finished_at DESC;
+```
+
+Yeni event yoksa manifest `0 object / 0 byte` olur ve Spark scriptleri session
+oluşturmadan başarıyla çıkar. Manifest seal sırasında S3 metadata prefix listing'i
+devam eder; bu işlem Spark data read ile aynı şey değildir.
+
+Manifest v3 bunlara ek olarak source workload transaction ID, PostgreSQL LSN sınırı
+ve beklenen/gözlenen CDC event toplamlarını mühürler. Son point-in-time audit ve
+tekil rule sonuçları şöyle sorgulanır:
+
+```sql
+SELECT batch_id, attempt_number, state, rule_count, failed_rule_count,
+       evidence_uri, evidence_sha256
+FROM pipeline_control.public.pipeline_attempt_audit
+ORDER BY recorded_at DESC;
+
+SELECT batch_id, attempt_number, rule_id, object_name,
+       expected_value, observed_value, status
+FROM pipeline_control.public.pipeline_audit_rule_result
+ORDER BY recorded_at DESC, rule_id, object_name;
+```
+
+Bir audit rule `FAIL` ise reconciliation evidence operatörü attempt'i başarısız yapar
+ve batch publish edilmez. Audit JSON'u attempt'e özgü URI'da immutable olarak kalır.
+Gold satırı kaynağa kadar izlemek için:
+
+```sql
+SELECT gold_model, gold_business_key, raw_vault_object, source_event_id,
+       kafka_topic, kafka_partition, kafka_offset, source_lsn, load_batch_id
+FROM lakehouse.gold_dbt.gold_row_lineage
+WHERE gold_model = 'fct_loans_current';
+```
+
 ## 10. Açık Production Eksikleri
 
+- Manifest discovery için history-independent Bronze inventory/index
+- Versioned build-test-promote-rollback Gold Airflow akışı
+- Raw DLQ, schema evolution, Bronze compaction ve storage amplification ölçümü
+- Failure-injection, history-scaling ve uzun süreli soak/recovery testleri
 - HA Kafka, object storage, metastore, Airflow, Trino ve monitoring deployment'ı
 - Merkezi log toplama, trace correlation ve SIEM entegrasyonu
 - Airflow StatsD/OpenTelemetry ve native Spark metric sink

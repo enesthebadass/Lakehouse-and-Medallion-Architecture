@@ -141,6 +141,12 @@ tek kurumsal tanıma bağlanır. Değişiklikler steward önerisi ve owner onay�
 - dbt manifest'i Raw Vault source -> Gold model bağımlılıklarını verir.
 - OpenMetadata dbt ingestion bu model/test lineage'ını catalog'a taşır.
 
+Production-shaped PoC hedefinde lineage yalnız dataset-to-dataset okundan ibaret
+olmayacaktır. Batch manifest URI, topic/partition low-high offset, schema contract
+version, Airflow attempt, reconciliation evidence ve aktif Gold release kimliği aynı
+run zincirine bağlanacaktır. Bu alanlar henüz runtime OpenLineage event'i olarak
+uygulanmış değildir; `Planned` durumundadır.
+
 ### Airflow ve Spark Runtime Lineage Hedefi
 
 Airflow REST metadata ingestion DAG ve task yapısını getirir; tek başına dataset lineage

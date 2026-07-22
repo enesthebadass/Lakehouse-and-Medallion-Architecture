@@ -20,13 +20,15 @@ as a demo fallback and manages only its own legacy prefixes.
 The editable diagrams.net source is
 [`LAKEHOUSE_ARCHITECTURE.drawio`](LAKEHOUSE_ARCHITECTURE.drawio). Its first page
 shows the verified local PoC; the second separates the bank integration target and
-external production gates.
+external production gates; the third is a slide-ready simplified Source-to-BI data
+flow.
 
 ```text
 Operational CDC path:
 Synthetic source -> PostgreSQL -> Debezium -> Kafka -> MinIO Bronze CDC
+  -> immutable manifest v3, source transaction ledger, and PostgreSQL control plane
   -> incremental Silver CDC Raw Vault Hubs, Links, Satellites, and audit controls
-  -> Hive Metastore -> Trino SQL -> dbt Gold mart -> BI
+  -> Hive Metastore -> Trino SQL -> dbt Gold mart and row lineage -> BI
 
 Production source blueprint:
 Oracle -> Debezium Oracle LogMiner adapter -> Kafka -> the governed CDC contract
@@ -44,6 +46,9 @@ Main components:
 - **MinIO** provides a local S3-compatible object store.
 - **Delta Lake** stores Silver and Gold tables with transaction logs.
 - **PostgreSQL** stores Airflow metadata.
+- **Pipeline Control PostgreSQL** independently stores batch watermarks, attempts,
+  source transactions, task evidence, immutable audit references, rule results, and
+  state transitions; Trino exposes it as `pipeline_control`.
 - **Core Banking Source PostgreSQL** is a separate synthetic operational source
   prepared for the CDC pilot. It is not a copy of the bank's Oracle schemas.
 - **Debezium and Kafka Connect** capture PostgreSQL row changes from logical WAL.
@@ -51,15 +56,16 @@ Main components:
 - **Bronze CDC Writer** stores replay-safe raw Kafka records in MinIO and commits
   offsets only after each object write is verified.
 - **CDC Raw Vault Job** uses insert-only Delta merges to load durable business keys,
-  relationships, descriptive history, delete status, quarantine, and reconciliation
-  without rebuilding existing history.
+  relationships, descriptive history, Hub-attached delete status, Link effectivity,
+  quarantine, and reconciliation without rebuilding existing history.
 - **Apache Hive Metastore** keeps the technical table catalog in a dedicated
   PostgreSQL database and resolves the Spark-written S3A table locations.
 - **Trino** exposes the Delta tables through the `lakehouse` SQL catalog for
   analysts, validation queries, and future Power BI connectivity.
 - **dbt Core** builds documented and tested Gold SQL models from the CDC Raw Vault
   through Trino. Its customer and lending marts deliberately exclude raw PII from
-  their BI surface.
+  their BI surface. `gold_row_lineage` maps every current Gold business row to its
+  contributing source event, Kafka coordinate, Bronze object, LSN, and load batch.
 - **OpenMetadata** provides the optional searchable governance catalog, dbt metadata,
   glossary, domain, ownership, classification, and lineage surface. It does not
   replace Hive Metastore or enforce Trino query authorization.
@@ -293,6 +299,8 @@ semantics, lag check, and replay procedure are documented in `cdc/bronze/README.
 Trigger the Airflow DAG `cdc_raw_vault_incremental` to validate Bronze, load Hubs and
 Links, load Satellite/delete history, and reconcile source, Bronze, and Silver in four
 visible tasks. The complete contract is documented in `cdc/DATA_VAULT_MAPPING.md`.
+Current Gold models exclude deleted entities and select one active application/loan
+context, including an `A -> B -> A` relationship return without duplicate fact grain.
 
 ## Oracle CDC Production Blueprint
 
@@ -383,10 +391,11 @@ Run the fast local checks with a Python 3.11 virtual environment:
 ```bash
 python -m pip install -r requirements-dev.txt -r cdc/bronze/requirements.txt
 ruff check .
-python -m compileall -q cdc dags observability scripts security source trino tests
+python -m compileall -q cdc dags observability operations scripts security source trino tests
 PYTHONPATH=cdc/bronze python -m unittest discover -s cdc/bronze -p 'test_*.py'
 python tests/test_observability_blueprint.py
 python tests/test_final_package.py
+python tests/test_phase0_baseline.py
 bash -n operations/end_to_end_smoke_test.sh
 bash -n operations/reproducibility_test.sh
 docker compose config --quiet
@@ -402,6 +411,21 @@ isolated `lakehouse-repro-*` Compose project with fresh volumes. It preserves th
 normal demo volumes and writes local evidence under the Git-ignored
 `tests/results/` directory. This is a reviewable local PoC acceptance test, not a
 production-readiness certification.
+
+## Correctness Baseline
+
+Before changing batch boundaries, incremental reads, or publish behavior, collect a
+stable source, Kafka, storage, Raw Vault, and Gold baseline:
+
+```bash
+python operations/collect_phase0_baseline.py \
+  --output tests/results/phase0-baseline.json
+```
+
+Run the collector again with `--compare-to` after a no-op retry. It fails when a
+mandatory live check or stable business fingerprint changes. The machine-readable
+invariants and technical field semantics are documented in
+`quality/correctness-invariants.yaml` and `quality/README.md`.
 
 ## Optional Observability Baseline
 
@@ -543,12 +567,19 @@ silver/cdc_raw_vault/
   sat_branch_details/
   sat_currency_details/
   sat_source_record_status/
+  sat_entity_record_status/
+  sat_application_context_effectivity/
+  sat_loan_context_effectivity/
 
 silver/quarantine/
   cdc_raw_vault_events/
 
 silver/audit/
   cdc_raw_vault_reconciliation/
+
+bronze/_control/
+  manifests/
+  audit/
 
 gold/
   dbt/
@@ -559,6 +590,7 @@ gold/
     dim_product_current-<generated-id>/
     fct_loan_applications_current-<generated-id>/
     fct_loans_current-<generated-id>/
+    gold_row_lineage-<generated-id>/
   dim_customer/
   dim_account/
   dim_merchant/
@@ -631,7 +663,30 @@ docker exec lakehouse-medallion-demo-spark-master-1 /opt/spark/bin/spark-submit 
   /opt/spark/scripts/3_process_gold.py
 ```
 
-Run the incremental CDC Raw Vault job:
+Trigger the manifest-controlled incremental CDC Raw Vault DAG:
+
+```bash
+docker compose exec airflow-webserver airflow dags trigger \
+  --run-id cdc-example-001 cdc_raw_vault_incremental
+```
+
+Inspect its immutable boundary and attempts through Trino:
+
+```bash
+docker compose exec trino trino --execute \
+  "SELECT * FROM pipeline_control.public.v_pipeline_batch_history ORDER BY created_at DESC"
+```
+
+Manifest version 3 stores the exact `(low, high]` Bronze object keys and byte sizes,
+plus frozen source workload transactions, PostgreSQL LSN boundary, and event totals.
+The orchestrated Spark phases open only those paths; a zero-object batch exits before
+creating a Spark session. Selected object/byte evidence is available in
+`pipeline_control.public.pipeline_task_evidence`. Attempt-level audit evidence and
+individual rule results are available in `pipeline_attempt_audit` and
+`pipeline_audit_rule_result`; publish requires a passing audit.
+
+Directly running the Spark application remains an unbounded diagnostic fallback and
+does not create a control-plane manifest:
 
 ```bash
 docker exec lakehouse-medallion-demo-spark-master-1 /opt/spark/bin/spark-submit \
@@ -642,6 +697,11 @@ docker exec lakehouse-medallion-demo-spark-master-1 /opt/spark/bin/spark-submit 
 ```
 
 Append `--phase validate`, `core`, `satellites`, or `reconcile` to run one stage.
+See `pipeline_control/README.md` for replay and control-plane queries.
+Deployments upgrading existing data must run the one-time
+`--phase current-state-backfill` migration over complete Bronze history before dbt
+current models are published. Normal bounded Airflow batches then maintain the three
+current-state Satellites incrementally.
 Verify the resulting history and controls with:
 
 ```bash
@@ -683,7 +743,8 @@ Gold stores analytics-ready dimensional tables:
 - `dim_account`
 - `dim_merchant`
 - `fact_transactions`
-- seven customer/lending models in `gold_dbt`, built and tested by dbt from the CDC Raw Vault
+- eight customer/lending and lineage models in `gold_dbt`, built and tested by dbt
+  from the CDC Raw Vault
 
 These tables are exposed through Trino for SQL clients and BI connectivity.
 

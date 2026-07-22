@@ -40,6 +40,7 @@ class WorkloadConfig:
     customer_count: int
     application_count: int
     installments_per_loan: int
+    fixture_step: str | None = None
 
     def audit_config(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -188,15 +189,27 @@ def execute_event(
 
     try:
         actual_result = action(connection)
+        expected_cdc_event_count = int(actual_result.pop("_cdc_event_count"))
         with connection.cursor() as cursor:
+            cursor.execute("SELECT txid_current()::BIGINT, pg_current_wal_insert_lsn()")
+            source_txid, source_boundary_lsn = cursor.fetchone()
             cursor.execute(
                 """
                 UPDATE simulator.workload_events
                 SET status = 'COMPLETED', actual_result = %s,
+                    expected_cdc_event_count = %s, source_txid = %s,
+                    source_boundary_lsn = %s,
                     completed_at = CURRENT_TIMESTAMP, error_message = NULL
                 WHERE run_id = %s AND event_key = %s
                 """,
-                (Json(actual_result), config.run_id, event_key),
+                (
+                    Json(actual_result),
+                    expected_cdc_event_count,
+                    source_txid,
+                    source_boundary_lsn,
+                    config.run_id,
+                    event_key,
+                ),
             )
         connection.commit()
         log("event_completed", actual_result=actual_result, event_key=event_key, run_id=config.run_id)
@@ -417,6 +430,7 @@ def snapshot_action(config: WorkloadConfig) -> EventAction:
                         ),
                     )
                     counters["collaterals"] += 1
+        counters["_cdc_event_count"] = sum(counters.values())
         return counters
 
     return action
@@ -468,6 +482,7 @@ def customer_change_action(config: WorkloadConfig) -> EventAction:
         return {
             "customer_no": customer["customer_no"], "customer_updates": customer_updates,
             "closed_addresses": closed_addresses, "inserted_addresses": 1,
+            "_cdc_event_count": customer_updates + closed_addresses + 1,
         }
     return action
 
@@ -491,7 +506,11 @@ def contact_delete_action(config: WorkloadConfig) -> EventAction:
                 raise RuntimeError("No secondary phone contact is available for deletion")
             cursor.execute("DELETE FROM mms.customer_contacts WHERE contact_id = %s", (contact["contact_id"],))
             deleted_contacts = cursor.rowcount
-        return {"customer_no": contact["customer_no"], "deleted_contacts": deleted_contacts}
+        return {
+            "customer_no": contact["customer_no"],
+            "deleted_contacts": deleted_contacts,
+            "_cdc_event_count": deleted_contacts,
+        }
     return action
 
 
@@ -555,6 +574,7 @@ def loan_approval_action(config: WorkloadConfig) -> EventAction:
             "application_no": application["application_no"], "approved_applications": 1,
             "inserted_loans": 1, "inserted_installments": installment_count,
             "loan_no": generated_loan_no,
+            "_cdc_event_count": 2 + installment_count,
         }
     return action
 
@@ -605,6 +625,7 @@ def installment_change_action(config: WorkloadConfig) -> EventAction:
         return {
             "loan_no": loan["loan_no"], "loan_updates": loan_updates,
             "overdue_installments": overdue_updates, "paid_installments": paid_updates,
+            "_cdc_event_count": loan_updates + overdue_updates + paid_updates,
         }
     return action
 
@@ -651,6 +672,7 @@ def rate_change_action(config: WorkloadConfig) -> EventAction:
             "new_annual_rate": str(next_rate),
             "new_effective_from": next_effective_from.isoformat(),
             "product_code": current_rate["product_code"],
+            "_cdc_event_count": closed_rates + 1,
         }
     return action
 
@@ -695,11 +717,139 @@ def run_changes(connection: Connection, config: WorkloadConfig) -> None:
         execute_event(connection, config, event_key, scenario, expected_result, action)
 
 
+PHASE4_LIFECYCLE_CUSTOMER = "P4CUSTLIFECYCLE"
+PHASE4_RELATION_CUSTOMER = "P4CUSTRELATION"
+PHASE4_APPLICATION = "P4APPRELATION"
+
+
+def current_state_fixture_action(config: WorkloadConfig) -> EventAction:
+    fixture_step = config.fixture_step
+
+    def action(connection: Connection) -> dict[str, Any]:
+        event_time = utc_at(config.base_date + timedelta(days=100), 10)
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            if fixture_step == "setup":
+                cursor.execute(
+                    "SELECT count(*) AS count FROM mms.customers "
+                    "WHERE customer_no IN (%s, %s)",
+                    (PHASE4_LIFECYCLE_CUSTOMER, PHASE4_RELATION_CUSTOMER),
+                )
+                if cursor.fetchone()["count"]:
+                    raise RuntimeError("Phase 4 setup entities already exist")
+                cursor.execute(
+                    """
+                    INSERT INTO mms.customers (
+                        customer_no, customer_type, first_name, last_name,
+                        national_id, date_of_birth, segment_code, status_code,
+                        home_branch_code, created_at, updated_at
+                    ) VALUES
+                        (%s, 'INDIVIDUAL', 'Phase', 'Lifecycle', '99999999991',
+                         DATE '1990-01-01', 'RETAIL', 'ACTIVE', 'IST001', %s, %s),
+                        (%s, 'INDIVIDUAL', 'Phase', 'Relation', '99999999992',
+                         DATE '1991-01-01', 'RETAIL', 'ACTIVE', 'IST001', %s, %s)
+                    """,
+                    (
+                        PHASE4_LIFECYCLE_CUSTOMER,
+                        event_time,
+                        event_time,
+                        PHASE4_RELATION_CUSTOMER,
+                        event_time,
+                        event_time,
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO krd.loan_applications (
+                        application_no, customer_no, product_code, branch_code,
+                        requested_amount, currency_code, term_months, status_code,
+                        applied_at, created_at, updated_at
+                    ) VALUES (%s, %s, 'CONSUMER_TRY', 'IST001', 25000.00,
+                              'TRY', 12, 'PENDING', %s, %s, %s)
+                    """,
+                    (
+                        PHASE4_APPLICATION,
+                        PHASE4_RELATION_CUSTOMER,
+                        event_time,
+                        event_time,
+                        event_time,
+                    ),
+                )
+                return {
+                    "fixture_step": fixture_step,
+                    "inserted_customers": 2,
+                    "inserted_applications": 1,
+                    "_cdc_event_count": 3,
+                }
+
+            if fixture_step == "delete":
+                cursor.execute(
+                    "DELETE FROM mms.customers WHERE customer_no = %s",
+                    (PHASE4_LIFECYCLE_CUSTOMER,),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("Phase 4 lifecycle customer is not active")
+                return {"fixture_step": fixture_step, "_cdc_event_count": 1}
+
+            if fixture_step == "recreate":
+                cursor.execute(
+                    "SELECT 1 FROM mms.customers WHERE customer_no = %s",
+                    (PHASE4_LIFECYCLE_CUSTOMER,),
+                )
+                if cursor.fetchone():
+                    raise RuntimeError("Phase 4 lifecycle customer is already active")
+                cursor.execute(
+                    """
+                    INSERT INTO mms.customers (
+                        customer_no, customer_type, first_name, last_name,
+                        national_id, date_of_birth, segment_code, status_code,
+                        home_branch_code, created_at, updated_at
+                    ) VALUES (%s, 'INDIVIDUAL', 'Phase', 'Lifecycle Recreated',
+                              '99999999991', DATE '1990-01-01', 'RETAIL',
+                              'ACTIVE', 'IST001', %s, %s)
+                    """,
+                    (PHASE4_LIFECYCLE_CUSTOMER, event_time, event_time),
+                )
+                return {"fixture_step": fixture_step, "_cdc_event_count": 1}
+
+            target_branch = "ANK001" if fixture_step == "relation-b" else "IST001"
+            expected_branch = "IST001" if fixture_step == "relation-b" else "ANK001"
+            cursor.execute(
+                """
+                UPDATE krd.loan_applications
+                SET branch_code = %s, updated_at = %s
+                WHERE application_no = %s AND branch_code = %s
+                """,
+                (target_branch, event_time, PHASE4_APPLICATION, expected_branch),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"Phase 4 application is not at expected branch {expected_branch}"
+                )
+            return {
+                "fixture_step": fixture_step,
+                "branch_code": target_branch,
+                "_cdc_event_count": 1,
+            }
+
+    return action
+
+
+def run_current_state_fixture(connection: Connection, config: WorkloadConfig) -> None:
+    execute_event(
+        connection,
+        config,
+        f"current_state_{config.fixture_step}",
+        "Phase 4 delete, re-create, and relationship-effectivity fixture",
+        f"Complete deterministic current-state step {config.fixture_step}",
+        current_state_fixture_action(config),
+    )
+
+
 def parse_args() -> WorkloadConfig:
     parser = argparse.ArgumentParser(
         description="Generate deterministic transactions in the synthetic core-banking source."
     )
-    parser.add_argument("mode", choices=("snapshot", "changes"))
+    parser.add_argument("mode", choices=("snapshot", "changes", "current-state"))
     parser.add_argument("--run-id")
     parser.add_argument("--seed", type=int, default=int(os.getenv("WORKLOAD_SEED", "42")))
     parser.add_argument(
@@ -709,8 +859,20 @@ def parse_args() -> WorkloadConfig:
     parser.add_argument("--customer-count", type=int, default=100)
     parser.add_argument("--application-count", type=int, default=40)
     parser.add_argument("--installments-per-loan", type=int, default=12)
+    parser.add_argument(
+        "--fixture-step",
+        choices=("setup", "delete", "recreate", "relation-b", "relation-a"),
+    )
     args = parser.parse_args()
-    run_id = args.run_id or f"{args.mode}-seed-{args.seed}-v1"
+    if args.mode == "current-state" and not args.fixture_step:
+        parser.error("current-state mode requires --fixture-step")
+    if args.mode != "current-state" and args.fixture_step:
+        parser.error("--fixture-step is only valid for current-state mode")
+    run_id = args.run_id or (
+        f"{args.mode}-{args.fixture_step}-seed-{args.seed}-v1"
+        if args.fixture_step
+        else f"{args.mode}-seed-{args.seed}-v1"
+    )
     if not RUN_ID_PATTERN.fullmatch(run_id):
         parser.error("--run-id must contain only letters, numbers, dot, underscore or dash (max 80)")
     if not 0 <= args.seed <= 999999:
@@ -725,6 +887,7 @@ def parse_args() -> WorkloadConfig:
         mode=args.mode, run_id=run_id, seed=args.seed, base_date=args.base_date,
         customer_count=args.customer_count, application_count=args.application_count,
         installments_per_loan=args.installments_per_loan,
+        fixture_step=args.fixture_step,
     )
 
 
@@ -738,8 +901,10 @@ def main() -> int:
             return 0
         if config.mode == "snapshot":
             run_snapshot(connection, config)
-        else:
+        elif config.mode == "changes":
             run_changes(connection, config)
+        else:
+            run_current_state_fixture(connection, config)
         finish_run(connection, config.run_id)
         return 0
     except Exception as error:

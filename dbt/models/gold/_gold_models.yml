@@ -53,6 +53,9 @@ models:
         data_tests: [not_null]
       - name: source_effective_from
         data_tests: [not_null]
+      - name: source_load_datetime
+        description: Timestamp when the source event landed in the Raw Vault.
+        data_tests: [not_null]
       - name: dbt_loaded_at
         data_tests: [not_null]
 
@@ -83,6 +86,8 @@ models:
         data_tests: [not_null]
       - name: source_effective_from
         data_tests: [not_null]
+      - name: source_load_datetime
+        data_tests: [not_null]
       - name: dbt_loaded_at
         data_tests: [not_null]
 
@@ -106,6 +111,8 @@ models:
       - name: is_active
         data_tests: [not_null]
       - name: source_effective_from
+        data_tests: [not_null]
+      - name: source_load_datetime
         data_tests: [not_null]
       - name: dbt_loaded_at
         data_tests: [not_null]
@@ -136,6 +143,8 @@ models:
         data_tests: [not_null]
       - name: source_effective_from
         data_tests: [not_null]
+      - name: source_load_datetime
+        data_tests: [not_null]
       - name: dbt_loaded_at
         data_tests: [not_null]
 
@@ -151,6 +160,8 @@ models:
                 to: source('cdc_raw_vault', 'hub_loan_application')
                 field: loan_application_hk
       - name: application_id
+        data_tests: [not_null, unique]
+      - name: application_context_hk
         data_tests: [not_null, unique]
       - name: customer_hk
         data_tests:
@@ -198,6 +209,12 @@ models:
         data_tests: [not_null]
       - name: source_effective_from
         data_tests: [not_null]
+      - name: source_load_datetime
+        data_tests: [not_null]
+      - name: context_effective_from
+        data_tests: [not_null]
+      - name: context_load_datetime
+        data_tests: [not_null]
       - name: dbt_loaded_at
         data_tests: [not_null]
 
@@ -213,6 +230,8 @@ models:
                 to: source('cdc_raw_vault', 'hub_loan')
                 field: loan_hk
       - name: loan_id
+        data_tests: [not_null, unique]
+      - name: loan_context_hk
         data_tests: [not_null, unique]
       - name: loan_application_hk
         data_tests:
@@ -268,6 +287,12 @@ models:
         data_tests: [not_null]
       - name: source_effective_from
         data_tests: [not_null]
+      - name: source_load_datetime
+        data_tests: [not_null]
+      - name: context_effective_from
+        data_tests: [not_null]
+      - name: context_load_datetime
+        data_tests: [not_null]
       - name: dbt_loaded_at
         data_tests: [not_null]
 
@@ -301,4 +326,39 @@ models:
       - name: total_principal_amount
         data_tests: [not_null]
       - name: dbt_loaded_at
+        data_tests: [not_null]
+
+  - name: gold_row_lineage
+    description: >-
+      Queryable source-event lineage for every current Gold business row. The
+      load_batch_id joins to the pipeline control catalog to recover its manifest,
+      execution attempt, immutable audit evidence, and publication state.
+    columns:
+      - name: gold_model
+        data_tests: [not_null]
+      - name: gold_business_key
+        data_tests: [not_null]
+      - name: lineage_role
+        data_tests: [not_null]
+      - name: raw_vault_object
+        data_tests: [not_null]
+      - name: source_event_id
+        data_tests: [not_null]
+      - name: source_position
+        data_tests: [not_null]
+      - name: record_source
+        data_tests: [not_null]
+      - name: bronze_object_key
+        data_tests: [not_null]
+      - name: kafka_topic
+        data_tests: [not_null]
+      - name: kafka_partition
+        data_tests: [not_null]
+      - name: kafka_offset
+        data_tests: [not_null]
+      - name: source_lsn
+        data_tests: [not_null]
+      - name: load_batch_id
+        data_tests: [not_null]
+      - name: source_effective_from
         data_tests: [not_null]

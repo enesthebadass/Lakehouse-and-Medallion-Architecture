@@ -91,6 +91,18 @@ business keys are retained under `silver/quarantine/cdc_raw_vault_events`. The
 source/Bronze/Silver count report is stored under
 `silver/audit/cdc_raw_vault_reconciliation`.
 
+Three current-state Satellites make that history directly usable by Gold:
+
+```text
+sat_entity_record_status
+sat_application_context_effectivity
+sat_loan_context_effectivity
+```
+
+The first attaches `ACTIVE`/`DELETED` state to implemented Hub hash keys. The two
+effectivity Satellites record each source event's active relationship context, so a
+return from A to B to A remains visible even though the original A Link already exists.
+
 Each row retains `load_datetime`, source event time, `record_source`, batch ID,
 Debezium LSN, Kafka topic/partition/offset, Bronze object key, and source event ID.
 
@@ -106,20 +118,29 @@ from the preceding version. The source event ID is the idempotent merge identity
 an A -> B -> A payload sequence preserves all three valid historical events while an
 exact replay inserts nothing.
 
-Deletes never remove Raw Vault rows. They create a `DELETED` transition in
-`sat_source_record_status`; a later reappearance creates another `ACTIVE` transition.
+Deletes never remove Raw Vault rows. They create `DELETED` transitions in generic
+`sat_source_record_status` and Hub-attached `sat_entity_record_status`; a later
+reappearance creates another `ACTIVE` transition. Shared ephemeral dbt current models
+exclude deleted entities and select the latest active relationship by source position.
+The source contract treats a loan's `application_id` as immutable after loan creation;
+changing that foreign key requires an explicit remapping rule rather than an ordinary
+descriptive update.
 The validation phase writes rejected records with a deterministic identity, reason
 code, raw payload, Bronze reference, and batch ID before downstream loading.
 
-The local pilot currently scans the complete immutable Bronze history on each run and
-uses target-side Delta `MERGE` for idempotency. A production implementation should add
-an audited high-water mark/checkpoint so it reads only unprocessed Kafka coordinates,
-while retaining Bronze replay capability.
+The Airflow path seals a manifest v3 boundary before processing. Spark opens only the
+exact immutable Bronze object list in `(watermark_low, watermark_high]`; a zero-object
+batch exits before a Spark session is created. Target-side Delta `MERGE` preserves
+idempotency, while the first Satellite event in a batch is compared with persisted
+target state to prevent boundary regressions.
 
-The reconciliation phase compares all 13 PostgreSQL source table counts with the
-current Bronze state and compares Bronze-derived historical counts with every
-implemented Hub, Link, Satellite, status, and quarantine Delta table. Any mismatch
-fails the phase after preserving the report.
+The source workload ledger stores each committed simulator transaction's PostgreSQL
+transaction ID, WAL LSN boundary, and expected CDC event count in that same source
+transaction. Reconciliation compares this frozen ledger set with only the manifest's
+Bronze objects. It also verifies unique Kafka coordinates, accepted plus quarantine
+conservation, and batch-to-target effects for every implemented Hub, Link, Satellite,
+status, and quarantine table. Results are retained in Delta and as an immutable,
+attempt-specific JSON audit artifact; publish fails closed when any rule fails.
 
 ## Run Locally
 
@@ -135,3 +156,15 @@ Use `--phase validate`, `core`, `satellites`, or `reconcile` to run one stage. T
 Airflow DAG `cdc_raw_vault_incremental` exposes those stages as four dependent tasks.
 Run `scripts/audit_cdc_raw_vault.py` to verify event uniqueness, multi-version
 Satellite history, delete preservation, and the latest reconciliation batch.
+
+The Airflow path also passes `--batch-id`, `--attempt-number`, `--airflow-run-id`,
+`--manifest-uri`, and `--manifest-sha256`. All four phases verify the same immutable
+manifest and, for v2/v3,
+open only the exact object keys in `(watermark_low, watermark_high]`. The first bounded
+Satellite row is compared with persisted target state; a non-advancing LSN/offset fails
+closed. Direct Spark execution without a manifest is a diagnostic fallback.
+
+`gold_dbt.gold_row_lineage` maps each current Gold business key to its contributing
+Raw Vault object, source event ID, Bronze object, Kafka coordinate, source LSN, and
+load batch. `load_batch_id` joins to the control catalog for manifest, attempt, audit,
+and publication evidence.

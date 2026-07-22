@@ -107,6 +107,24 @@ Debezium iki connector'da da temel envelope'u korur. Adapter'a özgü alanlar a�
 | Transaction | transaction metadata | transaction metadata | Raw sakla ve audit'e taşı |
 | Snapshot | `source.snapshot` | `source.snapshot` | `op=r` ile birlikte sakla |
 
+Silver staging, adapter'a özgü pozisyon alanlarını kaybetmeden ortak bir sıralama
+sözleşmesi üretmelidir:
+
+```text
+canonical_source_position = {
+  adapter,
+  transaction_position,   # PostgreSQL LSN veya Oracle commit_scn/scn
+  intra_transaction_order,# Oracle rs_id/ssn veya adapter eşdeğeri
+  kafka_topic,
+  kafka_partition,
+  kafka_offset
+}
+```
+
+Bu yapı tek bir sayıya zorlanmaz; Oracle transaction sırası ile Kafka teslim sırası
+aynı kavram değildir. Raw alanlar audit için korunur, canonical alan downstream
+deterministik sıralama ve adapter contract testleri için kullanılır.
+
 Oracle identifier'ları çoğunlukla büyük harfle gelir. Bronze writer artık `MMS` ve
 `mms` gibi şema adlarını canonical object path için `mms` biçimine getirir, ancak
 orijinal Debezium envelope'u değiştirmez. Böylece Bronze gerçek kaynak kaydı olarak
@@ -152,6 +170,10 @@ yasaktır; source owner tarafından onaylanmış tablo allowlist'i kullanılmal�
 8. Snapshot sırasında gelen değişikliklerin kaybolmadığı ve duplicate'lerin downstream
    idempotency tarafından güvenle işlendiği test edilir.
 9. Kafka -> Bronze -> Raw Vault reconciliation tamamlanmadan production kabulü verilmez.
+10. Raw Vault batch'i için topic/partition high offset manifest'i dondurulur; aynı
+    batch'in bütün task'ları bu manifest'i kullanır.
+11. Reconciliation canlı source durumuyla değil, snapshot/stream boundary'sinin SCN ve
+    Kafka offset kanıtlarıyla yapılır.
 
 Snapshot süresi `UNDO_RETENTION` değerini aşarsa `ORA-01555` riski vardır. Archive log
 retention yalnız normal gecikmeyi değil şu pencereyi karşılamalıdır:
@@ -246,8 +268,12 @@ başlatılmaz.
 - [ ] Duplicate ve connector restart testleri geçti.
 - [ ] Uzun transaction, peak redo ve archive pressure testi geçti.
 - [ ] DDL/schema evolution senaryoları kontrollü şekilde test edildi.
+- [ ] Oracle event fixture'ları canonical CDC schema contract testlerinden geçti.
 - [ ] LOB ve Oracle-specific tip kararları doğrulandı.
 - [ ] Source -> Kafka -> Bronze -> Raw Vault reconciliation geçti.
+- [ ] Reconciliation aynı SCN/commit SCN ve batch manifest boundary'sinde çalıştı.
+- [ ] Task aralarında gelen event'in sonraki batch'e kaldığı doğrulandı.
+- [ ] Sabit delta batch'in maliyeti büyüyen Bronze history ile doğrusal artmadı.
 - [ ] Credential rotation, TLS ve network isolation test edildi.
 - [ ] Monitoring, alert, backup/restore ve incident runbook hazır.
 

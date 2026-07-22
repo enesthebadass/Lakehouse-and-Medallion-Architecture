@@ -8,6 +8,7 @@ with ranked_customer_details as (
         home_branch_code,
         updated_at,
         effective_from,
+        load_datetime,
         source_lsn,
         kafka_partition,
         kafka_offset,
@@ -31,7 +32,8 @@ current_customer_details as (
         status_code,
         home_branch_code,
         {{ cdc_timestamp('updated_at') }} as source_updated_at,
-        effective_from as source_effective_from
+        effective_from as source_effective_from,
+        load_datetime as source_load_datetime
     from ranked_customer_details
     where detail_rank = 1
 ),
@@ -63,7 +65,11 @@ select
     details.status_code = 'ACTIVE' as is_active,
     details.source_updated_at,
     details.source_effective_from,
+    details.source_load_datetime,
     current_timestamp as dbt_loaded_at
 from {{ source('cdc_raw_vault', 'hub_customer') }} as hub
+inner join {{ ref('int_current_entity_status') }} as entity_status
+    on hub.customer_hk = entity_status.entity_hk
+    and entity_status.entity_type = 'CUSTOMER'
 inner join customer_with_age as details
     on hub.customer_hk = details.customer_hk
